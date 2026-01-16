@@ -6,7 +6,7 @@ import json
 wkt_polygon = "POLYGON((637185.1 851912.5, 637239.4 852087.0, 637575.3 851980.0, 637526.4 851806.0, 637185.1 851912.5))"
 
 # 2. Path to COPC file (remote URL or local path)
-remote_url = "data/autzen-classified.copc.laz"
+remote_url = "https://github.com/PDAL/data/raw/refs/heads/main/autzen/autzen-classified.copc.laz?download="
 
 # 3. Construct the PDAL Pipeline
 pipeline_def = [
