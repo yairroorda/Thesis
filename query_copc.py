@@ -2,6 +2,7 @@ import pdal
 import json
 import os
 import geopandas as gpd
+import time
 
 # 0. setup - ensure output directory exists
 os.makedirs("data", exist_ok=True)
@@ -71,10 +72,15 @@ def find_tiles(gdf_polygon):
 
 if __name__ == "__main__":
 
+    start_time = time.perf_counter()
+
     gdf = gpd.read_file(r"C:\Users\yairr\OneDrive\Thesis\groningen_polygon.gpkg")
     wkt_polygon_AHN6 = gdf.geometry.iloc[0].wkt #type:ignore
 
     remote_url_AHN6 = find_tiles(gdf)
 
     main(tile_urls=remote_url_AHN6, wkt_polygon=wkt_polygon_AHN6)
+
+    elapsed_time = time.perf_counter() - start_time
+    print(f"Total processing time: {elapsed_time}")
 
