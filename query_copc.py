@@ -74,7 +74,7 @@ if __name__ == "__main__":
 
     start_time = time.perf_counter()
 
-    gdf = gpd.read_file(r"C:\Users\yairr\OneDrive\Thesis\groningen_polygon.gpkg")
+    gdf = gpd.read_file(r"data/groningen_polygon.gpkg")
     wkt_polygon_AHN6 = gdf.geometry.iloc[0].wkt #type:ignore
 
     remote_url_AHN6 = find_tiles(gdf)
