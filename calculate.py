@@ -2,8 +2,10 @@ import json
 import numpy as np
 import pdal
 
-from utils import timed
+from utils import timed, get_logger
 
+
+logger = get_logger(name = "Calculate")
 
 DEFAULT_INPUT = r"data/output_classified.copc.laz"
 DEFAULT_OUTPUT = r"data/output_line_of_sight.copc.laz"
@@ -70,26 +72,31 @@ def calculate_line_of_sight(point1, point2, r, input_path=DEFAULT_INPUT, output_
     pipeline = pdal.Pipeline(json.dumps(read_pipeline))
     count = pipeline.execute()
     if count == 0:
+        logger.warning("No points found in the bounding box. Check your input data and coordinates.")
         return 0
 
     arrays = pipeline.arrays
     if not arrays:
+        logger.warning("No point data returned from PDAL pipeline.")
         return 0
+    logger.debug(f"Points in bounding box: {arrays[0].size}")
 
     points = np.concatenate(arrays)
     coords = np.column_stack((points["X"], points["Y"], points["Z"]))
     mask = distance_mask(coords, point1, point2, r)
     filtered = points[mask]
+    logger.debug(f"Filtered points count: {filtered.size}")
 
     if filtered.size == 0:
+        logger.warning("No points found within the specified radius of the line of sight.")
         return 0
 
     if "Classification" in filtered.dtype.names:
         classes, counts = np.unique(filtered["Classification"], return_counts=True)
         summary = ", ".join(f"{point_class}:{point_count}" for point_class, point_count in zip(classes, counts))
-        print(f"Class counts: {summary}")
+        logger.info(f"Class counts: {summary}")
     else:
-        print("Class counts: Classification dimension not found")
+        logger.warning("Classification dimension not found")
 
     write_pipeline = {
         "pipeline": [
@@ -104,6 +111,8 @@ def calculate_line_of_sight(point1, point2, r, input_path=DEFAULT_INPUT, output_
     writer = pdal.Pipeline(json.dumps(write_pipeline), arrays=[filtered])
     writer.execute()
 
+    logger.info(f"Wrote {filtered.size} points to {output_path}")
+
     return filtered.size
 
 
@@ -112,7 +121,6 @@ if __name__ == "__main__":
     p2 = (233912.2, 582187.5, 10.0)
     radius = 3
     processed = calculate_line_of_sight(p1, p2, radius)
-    print(f"Wrote {processed} points to {DEFAULT_OUTPUT}")
 
 # city block
     # p1 = (233609.0, 581598.0, 0.0)

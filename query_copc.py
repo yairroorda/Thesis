@@ -2,7 +2,9 @@ import pdal
 import json
 import os
 import geopandas as gpd
-from utils import timed
+from utils import timed, get_logger
+
+logger = get_logger(name="Query")
 
 # 0. setup - ensure output directory exists
 os.makedirs("data", exist_ok=True)
@@ -39,9 +41,9 @@ def query_tiles_2d(tile_urls, wkt_polygon):
     try:
         pipeline = pdal.Pipeline(json.dumps(pipeline_def))
         count = pipeline.execute()
-        print(f"Successfully processed {count} points from {len(tile_urls)} tiles.")
+        logger.info(f"Successfully processed {count} points from {len(tile_urls)} tiles.")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
 
 def find_tiles(gdf_polygon):
     '''Find the relevant AHN6 tiles for a given polygon.'''

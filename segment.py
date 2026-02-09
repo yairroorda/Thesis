@@ -1,7 +1,9 @@
 import pdal
 import json
 
-from utils import timed
+from utils import timed, get_logger
+
+logger = get_logger(name="Classify")
 
 input_file_path = r"data/output_merged.copc.laz"
 output_file_path = r"data/output_classified.copc.laz"
@@ -61,10 +63,10 @@ def classify_vegetation_rule_based(input_path, output_path):
     
     try:
         count = pipeline.execute()
-        print(f"Successfully processed {count} points.")
-        print(f"Output saved to: {output_path}")
+        logger.info(f"Successfully processed {count} points.")
+        logger.info(f"Output saved to: {output_path}")
     except Exception as e:
-        print(f"Pipeline failed: {e}")
+        logger.error(f"Pipeline failed: {e}")
 
 if __name__ == "__main__":
     classify_vegetation_rule_based(input_file_path, output_file_path)
