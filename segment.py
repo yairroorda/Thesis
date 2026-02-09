@@ -4,7 +4,7 @@ import json
 input_file_path = r"data/output_merged.copc.laz"
 output_file_path = r"data/output_classified.laz"
 
-def classify_points(input_path, output_path):
+def classify_vegetation_rule_based(input_path, output_path):
     """
     Classifies vegetation in AHN data by targeting 'Other' points (Class 1)
     using Height Above Ground (HAG) and Planarity.
@@ -52,7 +52,6 @@ def classify_points(input_path, output_path):
     # Convert dict to JSON for PDAL
     pipeline_json = json.dumps(pipeline_dict)
     pipeline = pdal.Pipeline(pipeline_json)
-    pipeline.loglevel =  4  # Set log level to debug for detailed output
     
     try:
         count = pipeline.execute()
@@ -62,4 +61,4 @@ def classify_points(input_path, output_path):
         print(f"Pipeline failed: {e}")
 
 if __name__ == "__main__":
-    classify_points(input_file_path, output_file_path)
+    classify_vegetation_rule_based(input_file_path, output_file_path)

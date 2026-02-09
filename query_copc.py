@@ -2,7 +2,7 @@ import pdal
 import json
 import os
 import geopandas as gpd
-import time
+from utils import timed
 
 # 0. setup - ensure output directory exists
 os.makedirs("data", exist_ok=True)
@@ -18,7 +18,7 @@ os.makedirs("data", exist_ok=True)
 # local_file_AHN6 = r"C:\Users\yairr\Downloads\test\hwh-ahn\AHN6\01_LAZ\AHN6_2025_C_233000_582000.COPC.LAZ"
 # remote_url_AHN6 = "https://fsn1.your-objectstorage.com/hwh-ahn/AHN6/01_LAZ/AHN6_2025_C_233000_582000.COPC.LAZ"
 
-def main(tile_urls, wkt_polygon):
+def query_tiles_2d(tile_urls, wkt_polygon):
     # Create a reader for every tile URL
     pipeline_def = [
         {"type": "readers.copc", "filename": url, "requests": 16} 
@@ -70,17 +70,19 @@ def find_tiles(gdf_polygon):
 
     return tile_urls
 
-if __name__ == "__main__":
+@timed("COPC query")
+def query_ahn_2d(polygon_path):
 
-    start_time = time.perf_counter()
-
-    gdf = gpd.read_file(r"data/groningen_polygon.gpkg")
+    gdf = gpd.read_file(polygon_path)
     wkt_polygon_AHN6 = gdf.geometry.iloc[0].wkt #type:ignore
 
     remote_url_AHN6 = find_tiles(gdf)
 
-    main(tile_urls=remote_url_AHN6, wkt_polygon=wkt_polygon_AHN6)
+    query_tiles_2d(tile_urls=remote_url_AHN6, wkt_polygon=wkt_polygon_AHN6)
 
-    elapsed_time = time.perf_counter() - start_time
-    print(f"Total processing time: {elapsed_time}")
+if __name__ == "__main__":
+
+    polygon_path = r"data/groningen_polygon.gpkg"
+
+    query_ahn_2d(polygon_path=polygon_path)
 
