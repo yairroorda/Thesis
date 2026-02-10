@@ -78,7 +78,7 @@ def find_tiles(gdf_polygon):
     # Load AHN6 tile index
     index_url = "https://basisdata.nl/hwh-ahn/AUX/bladwijzer_AHN6.gpkg"
     local_index_path = download_ahn_index(index_url)
-    index_gdf = gpd.read_file(local_index_path)
+    index_gdf = gpd.read_file(local_index_path, layer='bladindeling')
 
     # Spatial join to find intersecting tiles
     intersecting_tiles = gpd.sjoin(index_gdf, gdf_polygon, how="inner", predicate='intersects')
