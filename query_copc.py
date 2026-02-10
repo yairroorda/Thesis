@@ -2,6 +2,8 @@ import pdal
 import json
 import os
 import geopandas as gpd
+import urllib.request
+from urllib.parse import urlparse
 from utils import timed, get_logger
 
 logger = get_logger(name="Query")
@@ -19,6 +21,32 @@ os.makedirs("data", exist_ok=True)
 # remote_url_autzen = "https://github.com/PDAL/data/raw/refs/heads/main/autzen/autzen-classified.copc.laz?download="
 # local_file_AHN6 = r"C:\Users\yairr\Downloads\test\hwh-ahn\AHN6\01_LAZ\AHN6_2025_C_233000_582000.COPC.LAZ"
 # remote_url_AHN6 = "https://fsn1.your-objectstorage.com/hwh-ahn/AHN6/01_LAZ/AHN6_2025_C_233000_582000.COPC.LAZ"
+
+def download_ahn_index(index_url, target_dir='data'):
+    """
+    Downloads an index file from index_url if it doesn't already exist.
+    """
+    os.makedirs(target_dir, exist_ok=True)
+    filename = os.path.basename(urlparse(index_url).path)
+    local_path = os.path.join(target_dir, filename)
+    
+    if os.path.exists(local_path):
+        logger.info(f"Using existing local index: {local_path}")
+    else:
+        logger.info(f"Downloading AHN index from {index_url}...")
+        try:
+            # Set User-Agent to mimic a browser and bypass 403 restrictions
+            opener = urllib.request.build_opener()
+            opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')]
+            urllib.request.install_opener(opener)
+            
+            urllib.request.urlretrieve(index_url, local_path)
+            logger.info(f"Download complete: {local_path}")
+        except Exception as e:
+            logger.error(f"Failed to download index: {e}")
+            raise
+            
+    return local_path
 
 def query_tiles_2d(tile_urls, wkt_polygon):
     # Create a reader for every tile URL
@@ -49,7 +77,8 @@ def find_tiles(gdf_polygon):
     '''Find the relevant AHN6 tiles for a given polygon.'''
     # Load AHN6 tile index
     index_url = "https://basisdata.nl/hwh-ahn/AUX/bladwijzer_AHN6.gpkg"
-    index_gdf = gpd.read_file(index_url)
+    local_index_path = download_ahn_index(index_url)
+    index_gdf = gpd.read_file(local_index_path)
 
     # Spatial join to find intersecting tiles
     intersecting_tiles = gpd.sjoin(index_gdf, gdf_polygon, how="inner", predicate='intersects')
