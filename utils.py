@@ -18,7 +18,7 @@ def timed(label="No label provided"):
             finally:
                 elapsed = time.perf_counter() - start_time
                 log = get_logger("Timing")
-                log.info(f"{display}: {elapsed:.1f}s")
+                log.info(f"{display}: {elapsed:.3f}s")
 
         return wrapper
 

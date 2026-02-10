@@ -6,88 +6,129 @@ from scipy.spatial import cKDTree
 from utils import timed, get_logger
 
 
-logger = get_logger(name = "Calculate")
+logger = get_logger(name="Calculate")
 
 DEFAULT_INPUT = r"data/output_classified.copc.laz"
 DEFAULT_OUTPUT = r"data/output_line_of_sight.copc.laz"
 
-
-def build_bounds(point1, point2, radius):
-    x1, y1, z1 = point1
-    x2, y2, z2 = point2
-    minx = min(x1, x2) - radius
-    maxx = max(x1, x2) + radius
-    miny = min(y1, y2) - radius
-    maxy = max(y1, y2) + radius
-    minz = min(z1, z2) - radius
-    maxz = max(z1, z2) + radius
-
-    # return as a string for the PDAL crop filter
-    return f"([{minx},{maxx}],[{miny},{maxy}],[{minz},{maxz}])"
+WRITE_TO_FILE = False  # Control whether to write query outputs to a file.
 
 
-def distance_mask(points, point1, point2, radius):
+class Point:
+    def __init__(self, x: float, y: float, z: float):
+        self.x = x
+        self.y = y
+        self.z = z
 
-    # Convert inputs to numpy arrays for vectorized operations
-    p1 = np.asarray(point1, dtype=np.float64)
-    p2 = np.asarray(point2, dtype=np.float64)
-    radius = float(radius)
+    def to_array(self) -> np.ndarray:
+        return np.array([self.x, self.y, self.z], dtype=np.float64)
 
-    # Compute the vector from p1 to p2 and its denominator for projection
-    segment = p2 - p1
-    denom = np.dot(segment, segment)
+
+class PointPair:
+    def __init__(self, point1: Point, point2: Point):
+        self.point1 = point1
+        self.point2 = point2
+
+
+class Segment:
+    def __init__(self, point1: Point, point2: Point):
+        self.point1 = point1
+        self.point2 = point2
+        self.vector = np.array(
+            [point2.x - point1.x, point2.y - point1.y, point2.z - point1.z],
+            dtype=np.float64,
+        )
+        self.length_squared = np.dot(self.vector, self.vector)
+        self.length = np.sqrt(self.length_squared)
+
+
+class Cylinder:
+    def __init__(self, segment: Segment, radius: float):
+        self.segment = segment
+        self.radius = radius
+
+
+def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> np.ndarray[bool]:
+    segment = cylinder.segment
+    denom = segment.length_squared
+    radius = float(cylinder.radius)
+
+    p1 = segment.point1.to_array()
 
     if denom == 0.0:
-        distances = np.linalg.norm(points - p1, axis=1)
+        distances = np.linalg.norm(point_array - p1, axis=1)
         return distances <= radius
 
     # Compute the projection of each point onto the line defined by p1 and p2
     # Clip t to the range [0, 1] to restrict to the LoS segment
-    t = np.clip(((points - p1) @ segment) / denom, 0.0, 1.0)
+    t = np.clip(((point_array - p1) @ segment.vector) / denom, 0.0, 1.0)
     # Get the coordinates of the closest points on the segment for each point in the input
-    proj = p1 + t[:, None] * segment
+    proj = p1 + t[:, None] * segment.vector
     # Compute the distance from each point to its projection on the line
-    distances = np.linalg.norm(points - proj, axis=1)
-
+    distances = np.linalg.norm(point_array - proj, axis=1)
     # Return a boolean mask of points within the specified radius
     return distances <= radius
 
 
-def kdtree_candidate_indices(tree, point1, point2, radius):
-    p1 = np.asarray(point1, dtype=np.float64)
-    p2 = np.asarray(point2, dtype=np.float64)
-    radius = float(radius)
-
-    if radius <= 0.0:
-        return np.array([], dtype=np.int64)
-
-    segment = p2 - p1
-    seg_len = np.linalg.norm(segment)
-    if seg_len == 0.0:
-        idx = tree.query_ball_point(p1, r=radius)
-        return np.asarray(idx, dtype=np.int64)
+def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndarray[int]:
+    """
+    Generate candidate point indices from a KD-tree within a radius of the line segment.
+    """
+    segment = cylinder.segment
+    radius = float(cylinder.radius)
 
     step = radius
-    num_samples = max(2, int(np.ceil(seg_len / step)) + 1)
+    num_samples = max(2, int(np.ceil(segment.length / step)) + 1)
     t = np.linspace(0.0, 1.0, num_samples, dtype=np.float64)
-    samples = p1 + t[:, None] * segment
+    samples = segment.point1.to_array() + t[:, None] * segment.vector
 
     query_radius = radius + (step / 2.0)
-    candidate_lists = tree.query_ball_point(samples, r=query_radius)
+    candidate_lists = KDtree.query_ball_point(samples, r=query_radius)
 
     if len(candidate_lists) == 0:
         return np.array([], dtype=np.int64)
 
-    return np.unique(np.concatenate([np.asarray(lst, dtype=np.int64) for lst in candidate_lists]))
+    return np.unique(np.concatenate([np.asarray(candidate, dtype=np.int64) for candidate in candidate_lists]))
 
-def load_points_for_runs(point_pairs, r, input_path=DEFAULT_INPUT):
-    if r <= 0:
+
+def get_PDAL_bounds_for_runs(point_pairs: list[PointPair], radius: float) -> str:
+    """Calculate the bounding box that contains all point pairs, expanded by the radius."""
+    all_points = np.array(
+        [pair.point1.to_array() for pair in point_pairs] + [pair.point2.to_array() for pair in point_pairs],
+        dtype=np.float64,
+    )
+    minx, miny, minz = np.min(all_points, axis=0) - radius
+    maxx, maxy, maxz = np.max(all_points, axis=0) + radius
+    # Return string in the format expected by PDAL's filters.crop
+    return f"([{minx},{maxx}],[{miny},{maxy}],[{minz},{maxz}])"
+
+
+def write_to_copc(points_in_cylindar: np.ndarray, output_path: str):
+    write_pipeline = {
+        "pipeline": [
+            {
+                "type": "writers.copc",
+                "filename": output_path,
+                "forward": "all",
+            }
+        ]
+    }
+
+    writer = pdal.Pipeline(json.dumps(write_pipeline), arrays=[points_in_cylindar])
+    writer.execute()
+    logger.info(f"Wrote {points_in_cylindar.size} points to {output_path}")
+
+
+@timed("Loading points for runs")
+def load_points_for_runs(point_pairs: list[PointPair], radius: float, input_path: str = DEFAULT_INPUT) -> tuple[np.ndarray, np.ndarray, cKDTree]:
+    """
+    Load points from the input file that fall within a bounding box defined by the point pairs and radius.
+    """
+    if radius <= 0:
+        logger.error("Radius must be greater than zero.")
         raise ValueError("Radius must be greater than zero.")
 
-    all_points = np.array([p for pair in point_pairs for p in pair], dtype=np.float64)
-    minx, miny, minz = np.min(all_points, axis=0) - r
-    maxx, maxy, maxz = np.max(all_points, axis=0) + r
-    bounds = f"([{minx},{maxx}],[{miny},{maxy}],[{minz},{maxz}])"
+    bounds = get_PDAL_bounds_for_runs(point_pairs, radius)
 
     read_pipeline = {
         "pipeline": [
@@ -111,69 +152,43 @@ def load_points_for_runs(point_pairs, r, input_path=DEFAULT_INPUT):
 
     arrays = pipeline.arrays
     if not arrays:
-        logger.warning("No point data returned from PDAL pipeline.")
-        return None, None, None
+        logger.error("No point data returned from PDAL pipeline.")
+        raise ValueError("No point data returned from PDAL pipeline.")
     logger.debug(f"Points in bounding box: {arrays[0].size}")
 
-    points = np.concatenate(arrays)
-    coords = np.column_stack((points["X"], points["Y"], points["Z"]))
-    tree = cKDTree(coords)
-    return points, coords, tree
+    array_points = np.concatenate(arrays)
+    array_coords = np.column_stack((array_points["X"], array_points["Y"], array_points["Z"]))
+    KDtree = cKDTree(array_coords)
+    return array_points, array_coords, KDtree
 
 
 @timed("Line of sight calculation")
-def calculate_line_of_sight(point1, point2, r, input_path=DEFAULT_INPUT, output_path=DEFAULT_OUTPUT,
-                             points=None, coords=None, tree=None):
-    """Filter points within radius r of the LoS between point1 and point2.
+def calculate_number_of_points_in_cylinder(
+    cylinder: Cylinder,
+    array_points: np.ndarray,
+    array_coords: np.ndarray,
+    KDtree: cKDTree,
+    output_path: str = DEFAULT_OUTPUT,
+) -> int:
+    """Filter points within a radius of the line connecting point1 and point2."""
 
-    Writes the filtered points to a COPC file.
-    """
+    if array_points is None or array_coords is None or KDtree is None:
+        logger.error("Points, coordinates, and tree must be provided for line of sight calculation.")
+        raise ValueError("Points, coordinates, and tree must be provided for line of sight calculation.")
 
-    if r <= 0:
-        logger.warning("Radius must be greater than zero.")
-        return 0
+    if cylinder.segment.length == 0.0:
+        logger.error("Point1 and Point2 cannot be the same for line of sight calculation.")
+        raise ValueError("Point1 and Point2 cannot be the same for line of sight calculation.")
 
-    if points is None or coords is None or tree is None:
-        bounds = build_bounds(point1, point2, r)
+    array_candidate_indices = get_kdtree_candidate_indices(KDtree, cylinder)
 
-        read_pipeline = {
-            "pipeline": [
-                {
-                    "type": "readers.copc",
-                    "filename": input_path,
-                    "requests": 16,
-                },
-                {
-                    "type": "filters.crop",
-                    "bounds": bounds,
-                },
-            ]
-        }
-
-        pipeline = pdal.Pipeline(json.dumps(read_pipeline))
-        count = pipeline.execute()
-        if count == 0:
-            logger.warning("No points found in the bounding box. Check your input data and coordinates.")
-            return 0
-
-        arrays = pipeline.arrays
-        if not arrays:
-            logger.warning("No point data returned from PDAL pipeline.")
-            return 0
-        logger.debug(f"Points in bounding box: {arrays[0].size}")
-
-        points = np.concatenate(arrays)
-        coords = np.column_stack((points["X"], points["Y"], points["Z"]))
-        tree = cKDTree(coords)
-
-    candidate_idx = kdtree_candidate_indices(tree, point1, point2, r)
-    if candidate_idx.size == 0:
+    if array_candidate_indices.size == 0:
         logger.warning("No candidate points found near the line of sight.")
         return 0
 
-    candidate_coords = coords[candidate_idx]
-    mask = distance_mask(candidate_coords, point1, point2, r)
-    filtered = points[candidate_idx[mask]]
+    candidate_coords = array_coords[array_candidate_indices]
+    distance_mask = get_distance_mask(candidate_coords, cylinder)
+    filtered = array_points[array_candidate_indices[distance_mask]]
     logger.debug(f"Filtered points count: {filtered.size}")
 
     if filtered.size == 0:
@@ -187,47 +202,70 @@ def calculate_line_of_sight(point1, point2, r, input_path=DEFAULT_INPUT, output_
     else:
         logger.warning("Classification dimension not found")
 
-    # write_pipeline = {
-    #     "pipeline": [
-    #         {
-    #             "type": "writers.copc",
-    #             "filename": output_path,
-    #             "forward": "all",
-    #         }
-    #     ]
-    # }
-
-    # writer = pdal.Pipeline(json.dumps(write_pipeline), arrays=[filtered])
-    # writer.execute()
-
-    # logger.info(f"Wrote {filtered.size} points to {output_path}")
+    if WRITE_TO_FILE:
+        write_to_copc(filtered, output_path)
 
     return filtered.size
 
 
-if __name__ == "__main__":
-    base_p1 = (233974.5, 582114.2, 8.0)
-    base_p2 = (233912.2, 582187.5, 10.0)
-    radius = 3
-
+def generate_example_points(base_p1: Point, base_p2: Point, num_pairs: int) -> list[PointPair]:
     point_pairs = []
-    for i in range(10):
-        p1 = (base_p1[0] + i, base_p1[1], base_p1[2])
-        p2 = (base_p2[0] + i, base_p2[1], base_p2[2])
-        point_pairs.append((p1, p2))
+    for i in range(num_pairs):
+        p1 = Point(base_p1.x + i, base_p1.y, base_p1.z)
+        p2 = Point(base_p2.x + i, base_p2.y, base_p2.z)
+        point_pairs.append(PointPair(p1, p2))
+    return point_pairs
 
-    points, coords, tree = load_points_for_runs(point_pairs, radius, DEFAULT_INPUT)
-    if points is None:
+
+def calculate_point_to_multiple_points(
+    base_pair: PointPair,
+    radius: float,
+    runs: int,
+) -> None:
+    point_pairs = generate_example_points(base_pair.point1, base_pair.point2, runs)
+    array_points, array_coords, KDtree = load_points_for_runs(point_pairs, radius)
+    if array_points is None:
         logger.warning("No points loaded for the requested runs.")
     else:
-        for i, (p1, p2) in enumerate(point_pairs, start=1):
-            processed = calculate_line_of_sight(p1, p2, radius, points=points, coords=coords, tree=tree)
-            logger.info(f"Run {i}/10: processed {processed} points")
+        LoS_counts: dict[int, int] = {}
+        for Los_index, point_pair in enumerate(point_pairs, start=1):
+            output_path = f"output_{Los_index}.copc.laz"
+            segment = Segment(point_pair.point1, point_pair.point2)
+            cylinder = Cylinder(segment, radius)
+            number_of_points = calculate_number_of_points_in_cylinder(
+                cylinder,
+                array_points,
+                array_coords,
+                KDtree,
+                output_path=output_path,
+            )
+            logger.debug(f"Run {Los_index}/{runs}: processed {number_of_points} points")
+            LoS_counts[Los_index] = number_of_points
+    return LoS_counts
 
-# city block
-    # p1 = (233609.0, 581598.0, 0.0)
-    # p2 = (233957.0, 581946.0, 20.0)
 
-#park
-    # p1 = (233974.5, 582114.2, 5.0)
-    # p2 = (233912.2, 582187.5, 10.0)
+def calculate_point_to_point(point_pair: PointPair, radius: float) -> None:
+    array_points, array_coords, KDtree = load_points_for_runs([point_pair], radius)
+    if array_points is None:
+        logger.warning("No points loaded for the requested point pair.")
+        return 0
+    cylinder_of_sight = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
+    number_of_points = calculate_number_of_points_in_cylinder(
+        cylinder_of_sight,
+        array_points,
+        array_coords,
+        KDtree,
+        output_path=DEFAULT_OUTPUT,
+    )
+    return number_of_points
+
+if __name__ == "__main__":
+    city_block = PointPair(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
+    park = PointPair(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
+    point_pair = park
+    radius = 3
+    runs = 10
+    LoS_count = calculate_point_to_point(point_pair, radius)
+    print(f"Line of sight count for single pair: {LoS_count}")
+    LOS_counts = calculate_point_to_multiple_points(point_pair, radius, runs)
+    print("Line of sight counts for multiple runs:", LOS_counts)
