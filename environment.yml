@@ -6,6 +6,7 @@ dependencies:
   - python=3.14.2
   - geopandas=1.1.2
   - pdal=2.9.3
+  - scipy=1.16.1
   - pip
   - pip:
       - pdal-plugins==1.6.6
