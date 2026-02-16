@@ -3,7 +3,7 @@ import numpy as np
 import pdal
 from scipy.spatial import cKDTree
 
-from utils import timed, get_logger
+from utils import timed, get_logger, compare_speed
 
 
 logger = get_logger(name="Calculate")
@@ -260,6 +260,7 @@ def calculate_point_to_point(point_pair: PointPair, radius: float) -> None:
     )
     return number_of_points
 
+
 if __name__ == "__main__":
     city_block = PointPair(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
     park = PointPair(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
@@ -270,3 +271,13 @@ if __name__ == "__main__":
     print(f"Line of sight count for single pair: {LoS_count}")
     LOS_counts = calculate_point_to_multiple_points(point_pair, radius, runs)
     print("Line of sight counts for multiple runs:", LOS_counts)
+
+    # # Benchmarking updated KD-tree candidate retrieval function
+    # array_points, array_coords, KDtree = load_points_for_runs([point_pair], radius)
+    # cylinder = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
+    # runtimes = compare_speed(
+    #     logger,
+    #     lambda: get_kdtree_candidate_indices(KDtree, cylinder),
+    #     lambda: get_kdtree_candidate_indices_new(KDtree, cylinder),
+    #     runs=1000,
+    # )

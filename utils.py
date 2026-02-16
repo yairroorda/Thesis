@@ -4,13 +4,14 @@ from functools import wraps
 
 LOGGER_LEVEL = logging.DEBUG
 
+
 def timed(label="No label provided"):
     """Decorator that logs elapsed time for a function call."""
 
     def decorator(func):
         display = label or func.__name__
 
-        @wraps(func) # Used to preserve the original function's metadata (like name and docstring)
+        @wraps(func)  # Used to preserve the original function's metadata (like name and docstring)
         def wrapper(*args, **kwargs):
             start_time = time.perf_counter()
             try:
@@ -37,7 +38,35 @@ def get_logger(name="thesis"):
     logger.setLevel(LOGGER_LEVEL)
     return logger
 
+
+def compare_speed(
+    logger: logging.Logger,
+    func_old,
+    func_new,
+    *args,
+    runs: int = 1000,
+    **kwargs,
+) -> dict[str, float]:
+    start = time.perf_counter()
+    for _ in range(runs):
+        func_old(*args, **kwargs)
+    end = time.perf_counter()
+    tot_old = end - start
+
+    start_2 = time.perf_counter()
+    for _ in range(runs):
+        func_new(*args, **kwargs)
+    end_2 = time.perf_counter()
+    tot_new = end_2 - start_2
+
+    logger.info(
+        f"Total runtime over {runs} runs - old: {tot_old:.6f} s, new: {tot_new:.6f} s \n new/old ratio was {tot_new / tot_old}",
+    )
+    return {"old": tot_old, "new": tot_new}
+
+
 if __name__ == "__main__":
+
     @timed("Example function")
     def example():
         time.sleep(1.5)
