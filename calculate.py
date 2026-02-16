@@ -82,7 +82,8 @@ def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndar
     t = np.linspace(0.0, 1.0, num_samples, dtype=np.float64)
     samples = segment.point1.to_array() + t[:, None] * segment.vector
 
-    query_radius = radius + (step / 2.0)
+    # calculate query radius knowing R_sphere = sqrt(r_cylinder² + (step²/4))
+    query_radius = np.sqrt(radius**2 + (step**2 / 4))
     candidate_lists = KDtree.query_ball_point(samples, r=query_radius)
 
     if len(candidate_lists) == 0:
