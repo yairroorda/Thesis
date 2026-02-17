@@ -1,5 +1,6 @@
 import logging
 import time
+import numpy as np
 from functools import wraps
 
 LOGGER_LEVEL = logging.DEBUG
@@ -63,6 +64,19 @@ def compare_speed(
         f"Total runtime over {runs} runs - old: {tot_old:.6f} s, new: {tot_new:.6f} s \n new/old ratio was {tot_new / tot_old}",
     )
     return {"old": tot_old, "new": tot_new}
+
+
+def compare_outcomes(logger, func1, func2):
+    result1 = func1()
+    result2 = func2()
+    if np.array_equal(result1, result2):
+        logger.info("Both functions produced the same results.")
+    else:
+        logger.error("Functions produced different results!")
+        logger.debug(f"Length of result 1: {len(result1)}")
+        logger.debug(f"Length of result 2: {len(result2)}")
+        logger.debug(f"Result 1: {result1}")
+        logger.debug(f"Result 2: {result2}")
 
 
 if __name__ == "__main__":

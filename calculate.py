@@ -3,7 +3,7 @@ import numpy as np
 import pdal
 from scipy.spatial import cKDTree
 
-from utils import timed, get_logger, compare_speed
+from utils import timed, get_logger, compare_speed, compare_outcomes
 
 
 logger = get_logger(name="Calculate")
