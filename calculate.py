@@ -48,24 +48,25 @@ class Cylinder:
 
 def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> np.ndarray[bool]:
     segment = cylinder.segment
-    denom = segment.length_squared
     radius = float(cylinder.radius)
 
-    p1 = segment.point1.array_coords
+    p1_array = segment.point1.array_coords
 
-    if denom == 0.0:
-        distances = np.linalg.norm(point_array - p1, axis=1)
-        return distances <= radius
+    # Vector from p1 to all points (w)
+    w = point_array - p1_array
 
-    # Compute the projection of each point onto the line defined by p1 and p2
-    # Clip t to the range [0, 1] to restrict to the LoS segment
-    t = np.clip(((point_array - p1) @ segment.vector) / denom, 0.0, 1.0)
-    # Get the coordinates of the closest points on the segment for each point in the input
-    proj = p1 + t[:, None] * segment.vector
-    # Compute the distance from each point to its projection on the line
-    distances = np.linalg.norm(point_array - proj, axis=1)
+    # Projection parameter t = (w·v) / |v|^2
+    dots = w @ segment.vector  # w·v
+    denom = segment.length_squared  # |v|^2
+    t = np.clip(dots / denom, 0.0, 1.0)  # Clip t to the range [0, 1] to stay within the segment
+
+    # Calculate the squared distance to the closest point on the segment
+    # The formula: distances_squared = |w|^2 + t^2|v|^2 - 2t(w·v)
+    w_mag_sq = np.einsum("ij,ij->i", w, w)
+    distances_squared = w_mag_sq + (t**2 * denom) - (2 * t * dots)
+
     # Return a boolean mask of points within the specified radius
-    return distances <= radius
+    return distances_squared <= radius**2
 
 
 def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndarray[int]:
@@ -270,12 +271,19 @@ if __name__ == "__main__":
     LOS_counts = calculate_point_to_multiple_points(point_pair, radius, runs)
     print("Line of sight counts for multiple runs:", LOS_counts)
 
-    # # Benchmarking updated KD-tree candidate retrieval function
+    # # Benchmarking updated distance mask function
     # array_points, array_coords, KDtree = load_points_for_runs([point_pair], radius)
     # cylinder = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
+    # candidate_indices = get_kdtree_candidate_indices(KDtree, cylinder)
+    # candidate_coords = array_coords[candidate_indices]
+    # compare_outcomes(
+    #     logger,
+    #     lambda: get_distance_mask(candidate_coords, cylinder),
+    #     lambda: get_distance_mask_new(candidate_coords, cylinder),
+    # )
     # runtimes = compare_speed(
     #     logger,
-    #     lambda: get_kdtree_candidate_indices(KDtree, cylinder),
-    #     lambda: get_kdtree_candidate_indices_new(KDtree, cylinder),
-    #     runs=1000,
+    #     lambda: get_distance_mask(candidate_coords, cylinder),
+    #     lambda: get_distance_mask_new(candidate_coords, cylinder),
+    #     runs=10000,
     # )
