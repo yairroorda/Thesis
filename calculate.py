@@ -16,12 +16,10 @@ WRITE_TO_FILE = False  # Control whether to write query outputs to a file.
 
 class Point:
     def __init__(self, x: float, y: float, z: float):
+        self.array_coords = np.array([x, y, z], dtype=np.float64)
         self.x = x
         self.y = y
         self.z = z
-
-    def to_array(self) -> np.ndarray:
-        return np.array([self.x, self.y, self.z], dtype=np.float64)
 
 
 class PointPair:
@@ -53,7 +51,7 @@ def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> np.
     denom = segment.length_squared
     radius = float(cylinder.radius)
 
-    p1 = segment.point1.to_array()
+    p1 = segment.point1.array_coords
 
     if denom == 0.0:
         distances = np.linalg.norm(point_array - p1, axis=1)
@@ -80,7 +78,7 @@ def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndar
     step = radius
     num_samples = max(2, int(np.ceil(segment.length / step)) + 1)
     t = np.linspace(0.0, 1.0, num_samples, dtype=np.float64)
-    samples = segment.point1.to_array() + t[:, None] * segment.vector
+    samples = segment.point1.array_coords + t[:, None] * segment.vector
 
     # calculate query radius knowing R_sphere = sqrt(r_cylinder² + (step²/4))
     query_radius = np.sqrt(radius**2 + (step**2 / 4))
@@ -95,7 +93,7 @@ def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndar
 def get_PDAL_bounds_for_runs(point_pairs: list[PointPair], radius: float) -> str:
     """Calculate the bounding box that contains all point pairs, expanded by the radius."""
     all_points = np.array(
-        [pair.point1.to_array() for pair in point_pairs] + [pair.point2.to_array() for pair in point_pairs],
+        [pair.point1.array_coords for pair in point_pairs] + [pair.point2.array_coords for pair in point_pairs],
         dtype=np.float64,
     )
     minx, miny, minz = np.min(all_points, axis=0) - radius
