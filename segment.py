@@ -27,9 +27,18 @@ def classify_vegetation_rule_based(input_path, output_path):
             {"type": "filters.covariancefeatures", "knn": 15, "feature_set": ["Planarity"]},
             # 4. Assignment Logic:
             # - We only touch Classification 1 (Other)
-            # - If it's low (0.2m - 2m) and NOT flat (Planarity < 0.4) -> Class 3 (Low Veg)
-            # - If it's high (> 2m) and NOT flat (Planarity < 0.4) -> Class 5 (High Veg)
-            {"type": "filters.assign", "value": ["Classification=3 WHERE (Classification==1 && HeightAboveGround > 0.2 && HeightAboveGround <= 2.0 && Planarity < 0.4)", "Classification=5 WHERE (Classification==1 && HeightAboveGround > 2.0 && Planarity < 0.4)"]},
+            # - If NOT flat (Planarity < 0.4) it gets assigned to vegetation classes based on height:
+            # - < 1m → Class 3 (Low Vegetation) https://nationaalgeoregister.nl/geonetwork/srv/dut/catalog.search#/metadata/b2720481-a863-4d98-bdf2-742447d9f1c7
+            # - 1m -2.5m → Class 4 (Medium Vegetation) https://data.rivm.nl/meta/srv/api/records/bf63d834-254e-4fee-8c2f-504fbd8ed1c1
+            # - > 2.5m → Class 5 (High Vegetation) https://data.rivm.nl/meta/srv/api/records/89611780-75d6-4163-935f-9bc0a738f7ca
+            {
+                "type": "filters.assign",
+                "value": [
+                    "Classification=3 WHERE (Classification==1 && HeightAboveGround > 0 && HeightAboveGround <= 1 && Planarity < 0.4)",
+                    "Classification=4 WHERE (Classification==1 && HeightAboveGround > 1 && HeightAboveGround <= 2.5 && Planarity < 0.4)",
+                    "Classification=5 WHERE (Classification==1 && HeightAboveGround > 2.5 && Planarity < 0.4)",
+                ],
+            },
             # 5. Write the result to a new COPC file
             {
                 "type": "writers.copc",
@@ -52,4 +61,5 @@ def classify_vegetation_rule_based(input_path, output_path):
 
 
 if __name__ == "__main__":
+    logger.info("Starting vegetation classification")
     classify_vegetation_rule_based(input_file_path, output_file_path)
