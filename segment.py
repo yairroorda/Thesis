@@ -1,16 +1,17 @@
 import pdal
 import json
 
+from pathlib import Path
 from utils import timed, get_logger
 
 logger = get_logger(name="Classify")
 
-input_file_path = r"data/output_merged.copc.laz"
-output_file_path = r"data/output_classified.copc.laz"
+input_file_path = Path("data/output_merged.copc.laz")
+output_file_path = Path("data/output_classified.copc.laz")
 
 
 @timed("Vegetation classification")
-def classify_vegetation_rule_based(input_path, output_path):
+def classify_vegetation_rule_based(input_path: Path, output_path: Path):
     """
     Classifies vegetation in AHN data by targeting 'Other' points (Class 1)
     using Height Above Ground (HAG) and Planarity.
@@ -20,7 +21,7 @@ def classify_vegetation_rule_based(input_path, output_path):
     pipeline_dict = {
         "pipeline": [
             # 1. Read the input COPC/LAZ file
-            {"type": "readers.copc", "filename": input_path},
+            {"type": "readers.copc", "filename": str(input_path)},
             # 2. Calculate Height Above Ground using existing Class 2 (Ground)
             {"type": "filters.hag_nn"},
             # 3. Calculate planarity
@@ -42,7 +43,7 @@ def classify_vegetation_rule_based(input_path, output_path):
             # 5. Write the result to a new COPC file
             {
                 "type": "writers.copc",
-                "filename": output_path,
+                "filename": str(output_path),
                 "extra_dims": "all",  # Keeps HAG and Planarity dimensions for inspection
             },
         ]

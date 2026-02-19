@@ -4,14 +4,15 @@ import pdal
 import sys
 from scipy.spatial import cKDTree
 from tqdm import tqdm
+from pathlib import Path
 
 from utils import timed, get_logger, compare_speed, compare_outcomes
 
 
 logger = get_logger(name="Calculate")
 
-DEFAULT_INPUT = r"data/output_classified.copc.laz"
-DEFAULT_OUTPUT = r"data/output_line_of_sight.copc.laz"
+DEFAULT_INPUT = Path(r"data/output_classified.copc.laz")
+DEFAULT_OUTPUT = Path(r"data/output_viewshed.copc.laz")
 
 WRITE_TO_FILE = True  # Control whether to write query outputs to a file.
 
@@ -115,12 +116,12 @@ def get_PDAL_bounds_for_runs(point_pairs: list[PointPair], radius: float) -> str
     return f"([{minx},{maxx}],[{miny},{maxy}],[{minz},{maxz}])"
 
 
-def write_to_copc(points_in_cylindar: np.ndarray, output_path: str):
+def write_to_copc(points_in_cylindar: np.ndarray, output_path: Path):
     write_pipeline = {
         "pipeline": [
             {
                 "type": "writers.copc",
-                "filename": output_path,
+                "filename": str(output_path),
                 "forward": "all",
                 "extra_dims": "all",
             }
@@ -133,7 +134,7 @@ def write_to_copc(points_in_cylindar: np.ndarray, output_path: str):
 
 
 @timed("Loading points for runs")
-def load_points_for_runs(point_pairs: list[PointPair], radius: float, input_path: str = DEFAULT_INPUT) -> tuple[np.ndarray, np.ndarray, cKDTree]:
+def load_points_for_runs(point_pairs: list[PointPair], radius: float, input_path: Path = DEFAULT_INPUT) -> tuple[np.ndarray, np.ndarray, cKDTree]:
     """
     Load points from the input file that fall within a bounding box defined by the point pairs and radius.
     """
@@ -147,7 +148,7 @@ def load_points_for_runs(point_pairs: list[PointPair], radius: float, input_path
         "pipeline": [
             {
                 "type": "readers.copc",
-                "filename": input_path,
+                "filename": str(input_path),
                 "requests": 16,
             },
             {
@@ -181,7 +182,7 @@ def calculate_number_of_points_in_cylinder(
     array_points: np.ndarray,
     array_coords: np.ndarray,
     KDtree: cKDTree,
-    output_path: str = DEFAULT_OUTPUT,
+    output_path: Path = DEFAULT_OUTPUT,
 ) -> int:
     """Filter points within a radius of the line connecting point1 and point2."""
 
@@ -337,7 +338,7 @@ def calculate_point_to_multiple_points(
     else:
         LoS_counts: dict[int, int] = {}
         for Los_index, point_pair in enumerate(point_pairs, start=1):
-            output_path = f"output_{Los_index}.copc.laz"
+            output_path = DEFAULT_OUTPUT.parent / f"output_{Los_index}.copc.laz"
             segment = Segment(point_pair.point1, point_pair.point2)
             cylinder = Cylinder(segment, radius)
             number_of_points = calculate_number_of_points_in_cylinder(
@@ -372,8 +373,8 @@ def calculate_viewshed(
     target: Point,
     search_radius: float,
     cylinder_radius: float,
-    input_path: str = DEFAULT_INPUT,
-    output_path: str = "data/output_viewshed.copc.laz",
+    input_path: Path = DEFAULT_INPUT,
+    output_path: Path = DEFAULT_OUTPUT,
     thinning_factor: int = 1,
 ) -> None:
     """
@@ -389,9 +390,9 @@ def calculate_viewshed(
         3-D radius around target to select candidate points.
     cylinder_radius : float
         Radius of the LoS cylinder used for each intervisibility calculation.
-    input_path : str
+    input_path : Path
         COPC input file.
-    output_path : str
+    output_path : Path
         Output COPC file with the added Visibility dimension.
     thinning_factor : int
         Optional factor to thin the number of points for testing (e.g., 10 means use every 10th point).

@@ -1,6 +1,6 @@
 import pdal
 import json
-import os
+from pathlib import Path
 import geopandas as gpd
 import urllib.request
 from urllib.parse import urlparse
@@ -9,7 +9,8 @@ from utils import timed, get_logger
 logger = get_logger(name="Query")
 
 # 0. setup - ensure output directory exists
-os.makedirs("data", exist_ok=True)
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
 
 # 1. Define arbitrary WKT Polygon
 # The field of autzen stadium
@@ -23,15 +24,15 @@ os.makedirs("data", exist_ok=True)
 # remote_url_AHN6 = "https://fsn1.your-objectstorage.com/hwh-ahn/AHN6/01_LAZ/AHN6_2025_C_233000_582000.COPC.LAZ"
 
 
-def download_ahn_index(index_url, target_dir="data"):
+def download_ahn_index(index_url, target_dir: Path = DATA_DIR):
     """
     Downloads an index file from index_url if it doesn't already exist.
     """
-    os.makedirs(target_dir, exist_ok=True)
-    filename = os.path.basename(urlparse(index_url).path)
-    local_path = os.path.join(target_dir, filename)
+    Path(target_dir).mkdir(parents=True, exist_ok=True)
+    filename = Path(urlparse(index_url).path).name
+    local_path = Path(target_dir) / filename
 
-    if os.path.exists(local_path):
+    if local_path.exists():
         logger.info(f"Using existing local index: {local_path}")
     else:
         logger.info(f"Downloading AHN index from {index_url}...")
@@ -55,7 +56,7 @@ def query_tiles_2d(tile_urls, wkt_polygon):
     pipeline_def = [{"type": "readers.copc", "filename": url, "requests": 16} for url in tile_urls]
 
     # Add Merge, Crop, and Writer to the list
-    pipeline_def.extend([{"type": "filters.merge"}, {"type": "filters.crop", "polygon": wkt_polygon}, {"type": "writers.copc", "filename": "data/output_merged.copc.laz", "forward": "all"}])
+    pipeline_def.extend([{"type": "filters.merge"}, {"type": "filters.crop", "polygon": wkt_polygon}, {"type": "writers.copc", "filename": str(DATA_DIR / "output_merged.copc.laz"), "forward": "all"}])
 
     try:
         pipeline = pdal.Pipeline(json.dumps(pipeline_def))
@@ -106,6 +107,6 @@ def query_ahn_2d(polygon_path):
 
 
 if __name__ == "__main__":
-    polygon_path = r"data/groningen_polygon.gpkg"
+    polygon_path = Path("data/groningen_polygon.gpkg")
 
     query_ahn_2d(polygon_path=polygon_path)
