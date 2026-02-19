@@ -5,6 +5,7 @@ from utils import timed, get_logger
 
 logger = get_logger(name="Main")
 
+
 @timed("Total processing")
 def main():
     # Query the relevant points
@@ -21,6 +22,7 @@ def main():
     p2 = (233912.2, 582187.5, 10.0)
     radius = 3
     calculate_line_of_sight(p1, p2, radius)
+
 
 if __name__ == "__main__":
     main()
