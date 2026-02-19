@@ -1,7 +1,9 @@
 import json
 import numpy as np
 import pdal
+import sys
 from scipy.spatial import cKDTree
+from tqdm import tqdm
 
 from utils import timed, get_logger, compare_speed, compare_outcomes
 
@@ -18,8 +20,8 @@ CLASS_BUILDING = 6
 CLASS_VEGETATION = {3, 4, 5}  # low, medium, high vegetation classes
 
 # Figuring out what to set these thresholds to is a key part of the research but we can start with this for now.
-TERRAIN_DENSITY_THRESHOLD = 20
-BUILDING_DENSITY_THRESHOLD = 20
+TERRAIN_DENSITY_THRESHOLD = 14
+BUILDING_DENSITY_THRESHOLD = 14
 VEGETATION_DENSITY_THRESHOLD = 1
 BEER_LAMBERT_COEFFICIENT = 0.05
 
@@ -120,6 +122,7 @@ def write_to_copc(points_in_cylindar: np.ndarray, output_path: str):
                 "type": "writers.copc",
                 "filename": output_path,
                 "forward": "all",
+                "extra_dims": "all",
             }
         ]
     }
@@ -364,11 +367,88 @@ def calculate_point_to_point(point_pair: PointPair, radius: float) -> float:
     return visibility
 
 
+@timed("Viewshed calculation")
+def calculate_viewshed(
+    target: Point,
+    search_radius: float,
+    cylinder_radius: float,
+    input_path: str = DEFAULT_INPUT,
+    output_path: str = "data/output_viewshed.copc.laz",
+    thinning_factor: int = 1,
+) -> None:
+    """
+    For every point within search_radius of target, compute the intervisibility
+    from target to that point (using a cylinder of cylinder_radius around each
+    line of sight) and write the result as a new 'Visibility' dimension.
+
+    Parameters
+    ----------
+    target : Point
+        The observer / source point.
+    search_radius : float
+        3-D radius around target to select candidate points.
+    cylinder_radius : float
+        Radius of the LoS cylinder used for each intervisibility calculation.
+    input_path : str
+        COPC input file.
+    output_path : str
+        Output COPC file with the added Visibility dimension.
+    thinning_factor : int
+        Optional factor to thin the number of points for testing (e.g., 10 means use every 10th point).
+    """
+    # Load all points in the bounding box around the target
+    # Create a dummy pair so we can reuse load_points_for_runs with search_radius
+    # Code is **** ugly but it will work for now
+    dummy_pair = PointPair(target, target)
+    array_points, array_coords, KDtree = load_points_for_runs([dummy_pair], search_radius, input_path=input_path)
+
+    # Select points within search_radius of the target
+    target_coords = target.array_coords
+    distances = np.linalg.norm(array_coords - target_coords, axis=1)
+    sphere_mask = distances <= search_radius
+    sphere_indices = np.where(sphere_mask)[0]
+
+    if sphere_indices.size == 0:
+        logger.error("No points within search radius of target.")
+        sys.exit(1)
+
+    logger.info(f"Computing visibility for {sphere_indices.size} points with {thinning_factor}x thinning within a {search_radius}m radius.")
+
+    # Compute intervisibility for each thinned point
+    thinned_sphere_indices = sphere_indices[::thinning_factor]
+    visibility_values = np.ones(thinned_sphere_indices.size, dtype=np.float64)
+
+    for i, idx in enumerate(tqdm(thinned_sphere_indices, desc="Viewshed", unit="pts")):
+        pt_coords = array_coords[idx]
+        dest = Point(pt_coords[0], pt_coords[1], pt_coords[2])
+
+        segment = Segment(target, dest)
+        cylinder = Cylinder(segment, cylinder_radius)
+        visibility_values[i] = calculate_intervisibility(cylinder, array_points, array_coords, KDtree)
+
+    # Build output array with Visibility dimension (only thinned points)
+    thinned_points = array_points[thinned_sphere_indices]
+
+    # Create a new dtype that includes Visibility
+    new_dtype = np.dtype(thinned_points.dtype.descr + [("Visibility", "<f8")])
+    out_array = np.empty(thinned_points.size, dtype=new_dtype)
+
+    # Copy existing fields
+    for name in thinned_points.dtype.names:
+        out_array[name] = thinned_points[name]
+    out_array["Visibility"] = visibility_values
+
+    write_to_copc(out_array, output_path)
+
+
 if __name__ == "__main__":
     city_block = PointPair(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
     park = PointPair(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
     point_pair = park
     radius = 0.15
-    runs = 10
-    visibility = calculate_point_to_point(point_pair, radius)
-    print(f"Visibility for single pair: {visibility:.4f}")
+
+    # Viewshed
+    target = Point(233974.5, 582114.2, 5.0)
+    search_radius = 50
+    thinning_factor = 10
+    calculate_viewshed(target, search_radius, radius, thinning_factor=thinning_factor)

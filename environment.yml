@@ -7,6 +7,7 @@ dependencies:
   - geopandas=1.1.2
   - pdal=2.9.3
   - scipy=1.16.1
+  - tqdm=4.67.3
   - pip
   - pip:
       - pdal-plugins==1.6.6
