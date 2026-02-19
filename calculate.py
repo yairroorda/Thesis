@@ -11,7 +11,17 @@ logger = get_logger(name="Calculate")
 DEFAULT_INPUT = r"data/output_classified.copc.laz"
 DEFAULT_OUTPUT = r"data/output_line_of_sight.copc.laz"
 
-WRITE_TO_FILE = False  # Control whether to write query outputs to a file.
+WRITE_TO_FILE = True  # Control whether to write query outputs to a file.
+
+CLASS_TERRAIN = 2
+CLASS_BUILDING = 6
+CLASS_VEGETATION = {3, 4, 5}  # low, medium, high vegetation classes
+
+# Figuring out what to set these thresholds to is a key part of the research but we can start with this for now.
+TERRAIN_DENSITY_THRESHOLD = 20
+BUILDING_DENSITY_THRESHOLD = 20
+VEGETATION_DENSITY_THRESHOLD = 1
+BEER_LAMBERT_COEFFICIENT = 0.05
 
 
 class Point:
@@ -46,7 +56,7 @@ class Cylinder:
         self.radius = radius
 
 
-def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> np.ndarray[bool]:
+def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> tuple[np.ndarray[bool], np.ndarray[float]]:
     segment = cylinder.segment
     radius = float(cylinder.radius)
 
@@ -65,8 +75,8 @@ def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> np.
     w_mag_sq = np.einsum("ij,ij->i", w, w)
     distances_squared = w_mag_sq + (t**2 * denom) - (2 * t * dots)
 
-    # Return a boolean mask of points within the specified radius
-    return distances_squared <= radius**2
+    # Return a boolean mask of points within the specified radius, and the projection parameters
+    return distances_squared <= radius**2, t
 
 
 def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndarray[int]:
@@ -187,7 +197,7 @@ def calculate_number_of_points_in_cylinder(
         return 0
 
     candidate_coords = array_coords[array_candidate_indices]
-    distance_mask = get_distance_mask(candidate_coords, cylinder)
+    distance_mask, _ = get_distance_mask(candidate_coords, cylinder)
     filtered = array_points[array_candidate_indices[distance_mask]]
     logger.debug(f"Filtered points count: {filtered.size}")
 
@@ -206,6 +216,101 @@ def calculate_number_of_points_in_cylinder(
         write_to_copc(filtered, output_path)
 
     return filtered.size
+
+
+# @timed("Intervisibility calculation")
+def calculate_intervisibility(
+    cylinder: Cylinder,
+    array_points: np.ndarray,
+    array_coords: np.ndarray,
+    KDtree: cKDTree,
+) -> float:
+    """
+    Walk the line of sight from source to target in steps and compute a
+    visibility value between 0 and 1.
+
+    For each step:
+      - If terrain density >= threshold  -> return 0.0 (fully blocked).
+      - If building density >= threshold -> return 0.0 (fully blocked).
+      - If vegetation density >= threshold -> decrease visibility via:
+        visibility = exp(-k * veg_density * step_length)
+
+    Density is defined as  count / (pi * r^2).
+    """
+
+    segment = cylinder.segment
+    radius = float(cylinder.radius)
+    cross_section_area = np.pi * radius**2
+
+    # Get all points inside the cylinder
+    candidate_indices = get_kdtree_candidate_indices(KDtree, cylinder)
+
+    candidate_coords = array_coords[candidate_indices]
+    distance_mask, t_all = get_distance_mask(candidate_coords, cylinder)
+    filtered_indices = candidate_indices[distance_mask]
+
+    if filtered_indices.size == 0:
+        # logger.info("No points in cylinder – full visibility.")
+        return 1.0
+
+    filtered_points = array_points[filtered_indices]
+    t_values = t_all[distance_mask]  # reuse projection parameters from get_distance_mask
+
+    # if WRITE_TO_FILE:
+    #     write_to_copc(filtered_points, DEFAULT_OUTPUT)
+
+    # Define step bins along the segment
+    step_length = radius  # same step size used by the KD-tree sampler
+    num_steps = max(1, int(np.ceil(segment.length / step_length)))
+    bin_edges = np.linspace(0.0, 1.0, num_steps + 1)
+
+    # Pre-fetch classifications
+    classifications = filtered_points["Classification"]
+
+    # Masks per class (computed once)
+    terrain_mask = classifications == CLASS_TERRAIN
+    building_mask = classifications == CLASS_BUILDING
+    vegetation_mask = np.isin(classifications, list(CLASS_VEGETATION))
+
+    # Walk the LoS
+    visibility = 1.0
+
+    for i in range(num_steps):
+        t_lo, t_hi = bin_edges[i], bin_edges[i + 1]
+        in_bin = (t_values >= t_lo) & (t_values < t_hi)
+        # Include the endpoint in the last bin
+        if i == num_steps - 1:
+            in_bin |= t_values == t_hi
+
+        # Check threshold for terrain
+        terrain_count = int(np.count_nonzero(in_bin & terrain_mask))
+        terrain_density = terrain_count / cross_section_area
+
+        if terrain_density >= TERRAIN_DENSITY_THRESHOLD:
+            # logger.info(f"Step {i + 1}/{num_steps}: terrain density {terrain_density:.2f} >= threshold {TERRAIN_DENSITY_THRESHOLD} – blocked.")
+            return 0.0
+
+        # Check threshold for buildings
+        building_count = int(np.count_nonzero(in_bin & building_mask))
+        building_density = building_count / cross_section_area
+
+        if building_density >= BUILDING_DENSITY_THRESHOLD:
+            # logger.info(f"Step {i + 1}/{num_steps}: building density {building_density:.2f} >= threshold {BUILDING_DENSITY_THRESHOLD} – blocked.")
+            return 0.0
+
+        # Decrease visibility for vegetation
+        vegetation_count = int(np.count_nonzero(in_bin & vegetation_mask))
+        vegetation_density = vegetation_count / cross_section_area
+
+        if vegetation_density >= VEGETATION_DENSITY_THRESHOLD:
+            actual_step = step_length if i < num_steps - 1 else segment.length - i * step_length
+            attenuation = np.exp(-BEER_LAMBERT_COEFFICIENT * vegetation_density * actual_step)
+            visibility *= attenuation
+            # logger.debug(f"Step {i + 1}/{num_steps}: veg density {vegetation_density:.2f}, attenuation {attenuation:.4f}, visibility now {visibility:.4f}")
+
+    visibility = float(np.clip(visibility, 0.0, 1.0))
+    # logger.info(f"Final visibility: {visibility:.4f}")
+    return visibility
 
 
 def generate_example_points(base_p1: Point, base_p2: Point, num_pairs: int) -> list[PointPair]:
@@ -244,46 +349,26 @@ def calculate_point_to_multiple_points(
     return LoS_counts
 
 
-def calculate_point_to_point(point_pair: PointPair, radius: float) -> None:
+def calculate_point_to_point(point_pair: PointPair, radius: float) -> float:
     array_points, array_coords, KDtree = load_points_for_runs([point_pair], radius)
     if array_points is None:
         logger.warning("No points loaded for the requested point pair.")
-        return 0
+        return 1.0  # Assume full visibility if no points are loaded
     cylinder_of_sight = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
-    number_of_points = calculate_number_of_points_in_cylinder(
+    visibility = calculate_intervisibility(
         cylinder_of_sight,
         array_points,
         array_coords,
         KDtree,
-        output_path=DEFAULT_OUTPUT,
     )
-    return number_of_points
+    return visibility
 
 
 if __name__ == "__main__":
     city_block = PointPair(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
     park = PointPair(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
     point_pair = park
-    radius = 3
+    radius = 0.15
     runs = 10
-    LoS_count = calculate_point_to_point(point_pair, radius)
-    print(f"Line of sight count for single pair: {LoS_count}")
-    LOS_counts = calculate_point_to_multiple_points(point_pair, radius, runs)
-    print("Line of sight counts for multiple runs:", LOS_counts)
-
-    # # Benchmarking updated distance mask function
-    # array_points, array_coords, KDtree = load_points_for_runs([point_pair], radius)
-    # cylinder = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
-    # candidate_indices = get_kdtree_candidate_indices(KDtree, cylinder)
-    # candidate_coords = array_coords[candidate_indices]
-    # compare_outcomes(
-    #     logger,
-    #     lambda: get_distance_mask(candidate_coords, cylinder),
-    #     lambda: get_distance_mask_new(candidate_coords, cylinder),
-    # )
-    # runtimes = compare_speed(
-    #     logger,
-    #     lambda: get_distance_mask(candidate_coords, cylinder),
-    #     lambda: get_distance_mask_new(candidate_coords, cylinder),
-    #     runs=10000,
-    # )
+    visibility = calculate_point_to_point(point_pair, radius)
+    print(f"Visibility for single pair: {visibility:.4f}")
