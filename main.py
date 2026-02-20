@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from query_copc import query_ahn_2d as query_copc
+from query_copc import query_ahn_2d as query_copc, Polygon
 from segment import classify_vegetation_rule_based as classify_vegetation
-from calculate import calculate_line_of_sight as calculate_line_of_sight
+from calculate import PointPair, calculate_point_to_point
 from utils import timed, get_logger
 
 logger = get_logger(name="Main")
@@ -11,8 +11,12 @@ logger = get_logger(name="Main")
 @timed("Total processing")
 def main():
     # Query the relevant points
-    polygon_path = Path("data/groningen_polygon.gpkg")
-    query_copc(polygon_path=polygon_path)
+
+    # polygon_path = Path("data/groningen_polygon.gpkg")
+    # query_copc(polygon_path=polygon_path)
+
+    aoi = Polygon.get_from_user("Select area of interest")
+    query_copc(polygon=aoi)
 
     # Classify vegetation
     input_copc_path = Path("data/output_merged.copc.laz")
@@ -20,10 +24,12 @@ def main():
     classify_vegetation(input_copc_path, output_classified_path)
 
     # Calculate line of sight
-    p1 = (233974.5, 582114.2, 8.0)
-    p2 = (233912.2, 582187.5, 10.0)
-    radius = 3
-    calculate_line_of_sight(p1, p2, radius)
+    # p1 = Point(233974.5, 582114.2, 8.0)
+    # p2 = Point(233912.2, 582187.5, 10.0)
+    pair = PointPair.get_from_user("Select points for intervisibility")
+    radius = 3.0
+    visibility = calculate_point_to_point(pair, radius)
+    print(f"Calculated visibility: {visibility:.4f}")
 
 
 if __name__ == "__main__":

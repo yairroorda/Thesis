@@ -7,6 +7,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 from utils import timed, get_logger, compare_speed, compare_outcomes
+from gui import make_map, _TO_RD
 
 
 logger = get_logger(name="Calculate")
@@ -39,6 +40,55 @@ class PointPair:
     def __init__(self, point1: Point, point2: Point):
         self.point1 = point1
         self.point2 = point2
+
+    @classmethod
+    def get_from_user(cls, title: str = "Set P1/P2") -> "PointPair":
+        """Let the user pick two points on the map. Returns (p1, p2) with p1/p2 as (x, y, z) in RD."""
+        import tkinter as tk
+
+        root, map_widget, controls = make_map(title)
+
+        mode = tk.StringVar(value="p1")
+        p1_xy = {"v": None}
+        p2_xy = {"v": None}
+        markers = {"p1": None, "p2": None}
+
+        def on_click(coords):
+            lat_c, lon_c = float(coords[0]), float(coords[1])
+            x, y = _TO_RD.transform(lon_c, lat_c)
+            key = mode.get()
+
+            if markers[key] is not None:
+                markers[key].delete()
+            markers[key] = map_widget.set_marker(lat_c, lon_c, text=key.upper())
+            (p1_xy if key == "p1" else p2_xy)["v"] = (x, y)
+
+            if key == "p1":
+                mode.set("p2")
+
+        tk.Label(controls, text="Mode").pack(anchor="w")
+        tk.Radiobutton(controls, text="Point P1", variable=mode, value="p1").pack(anchor="w")
+        tk.Radiobutton(controls, text="Point P2", variable=mode, value="p2").pack(anchor="w")
+
+        tk.Label(controls, text="P1 Z").pack(anchor="w", pady=(8, 0))
+        p1z = tk.Entry(controls)
+        p1z.insert(0, "8.0")
+        p1z.pack(fill=tk.X)
+
+        tk.Label(controls, text="P2 Z").pack(anchor="w", pady=(8, 0))
+        p2z = tk.Entry(controls)
+        p2z.insert(0, "10.0")
+        p2z.pack(fill=tk.X)
+
+        tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(10, 0))
+        map_widget.add_left_click_map_command(on_click)
+
+        root.mainloop()
+
+        p1 = (*p1_xy["v"], float(p1z.get()))
+        p2 = (*p2_xy["v"], float(p2z.get()))
+        root.destroy()
+        return cls(Point(*p1), Point(*p2))
 
 
 class Segment:
@@ -448,8 +498,13 @@ if __name__ == "__main__":
     point_pair = park
     radius = 0.15
 
-    # Viewshed
-    target = Point(233974.5, 582114.2, 5.0)
-    search_radius = 50
-    thinning_factor = 10
-    calculate_viewshed(target, search_radius, radius, thinning_factor=thinning_factor)
+    # # Viewshed
+    # target = Point(233974.5, 582114.2, 5.0)
+    # search_radius = 50
+    # thinning_factor = 10
+    # calculate_viewshed(target, search_radius, radius, thinning_factor=thinning_factor)
+
+    pair = PointPair.get_from_user("Select points for intervisibility")
+    radius = 3.0
+    visibility = calculate_point_to_point(pair, radius)
+    logger.info(f"Calculated visibility: {visibility:.4f}")

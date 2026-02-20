@@ -2,11 +2,60 @@ import pdal
 import json
 from pathlib import Path
 import geopandas as gpd
+from shapely.geometry import Polygon as ShapelyPolygon
 import urllib.request
 from urllib.parse import urlparse
 from utils import timed, get_logger
+from gui import make_map, _TO_RD
 
 logger = get_logger(name="Query")
+
+
+class Polygon(ShapelyPolygon):
+    """Shapely Polygon subclass with a GUI constructor."""
+
+    @classmethod
+    def get_from_user(cls, title: str = "Draw polygon") -> "Polygon":
+        """Let the user draw a polygon on the map."""
+        import tkinter as tk
+
+        root, map_widget, controls = make_map(title)
+
+        points_latlon: list[tuple[float, float]] = []
+        polygon = {"obj": None}
+        marker_list: list = []
+
+        def redraw():
+            if polygon["obj"] is not None:
+                polygon["obj"].delete()
+            for m in marker_list:
+                m.delete()
+            marker_list.clear()
+
+            for pt in points_latlon:
+                marker_list.append(map_widget.set_marker(*pt))
+            if len(points_latlon) == 2:
+                polygon["obj"] = map_widget.set_path(points_latlon)
+            elif len(points_latlon) >= 3:
+                polygon["obj"] = map_widget.set_polygon(points_latlon)
+
+        def on_click(coords):
+            points_latlon.append((float(coords[0]), float(coords[1])))
+            redraw()
+
+        def clear():
+            points_latlon.clear()
+            redraw()
+
+        tk.Button(controls, text="Clear", command=clear).pack(fill=tk.X)
+        tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(8, 0))
+        map_widget.add_left_click_map_command(on_click)
+
+        root.mainloop()
+        root.destroy()
+
+        return cls([_TO_RD.transform(lon, lat) for lat, lon in points_latlon])
+
 
 # 0. setup - ensure output directory exists
 DATA_DIR = Path("data")
@@ -96,9 +145,12 @@ def find_tiles(gdf_polygon):
 
 
 @timed("COPC query")
-def query_ahn_2d(polygon_path):
+def query_ahn_2d(polygon: Polygon | None = None, polygon_path: Path | None = None):
+    if polygon is not None:
+        gdf = gpd.GeoDataFrame(geometry=[polygon], crs="EPSG:28992")
+    else:
+        gdf = gpd.read_file(polygon_path)
 
-    gdf = gpd.read_file(polygon_path)
     wkt_polygon_AHN6 = gdf.geometry.iloc[0].wkt  # type:ignore
 
     remote_url_AHN6 = find_tiles(gdf)
@@ -107,6 +159,8 @@ def query_ahn_2d(polygon_path):
 
 
 if __name__ == "__main__":
-    polygon_path = Path("data/groningen_polygon.gpkg")
+    # polygon_path = Path("data/groningen_polygon.gpkg")
+    # query_ahn_2d(polygon_path=polygon_path)
 
-    query_ahn_2d(polygon_path=polygon_path)
+    aoi = Polygon.get_from_user("Select polygon AOI for AHN query")
+    query_ahn_2d(polygon=aoi)
