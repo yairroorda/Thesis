@@ -35,14 +35,55 @@ class Point:
         self.y = y
         self.z = z
 
+    @classmethod
+    def get_from_user(cls, title: str = "Set point") -> "Point":
+        """Let the user pick one point on the map. Returns (x, y, z) in RD."""
+        import tkinter as tk
 
-class PointPair:
+        root, map_widget, controls = make_map(title)
+
+        p_xy = {"v": None}
+        marker = {"p": None}
+
+        def on_click(coords):
+            lat_c, lon_c = float(coords[0]), float(coords[1])
+            x, y = _TO_RD.transform(lon_c, lat_c)
+
+            if marker["p"] is not None:
+                marker["p"].delete()
+            marker["p"] = map_widget.set_marker(lat_c, lon_c, text="P1")
+            p_xy["v"] = (x, y)
+
+        tk.Label(controls, text="Point P1").pack(anchor="w")
+
+        tk.Label(controls, text="P1 Z").pack(anchor="w", pady=(8, 0))
+        pz = tk.Entry(controls)
+        pz.insert(0, "8.0")
+        pz.pack(fill=tk.X)
+
+        tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(10, 0))
+        map_widget.add_left_click_map_command(on_click)
+
+        root.mainloop()
+
+        p = (*p_xy["v"], float(pz.get()))
+        root.destroy()
+        return cls(*p)
+
+
+class Segment:
     def __init__(self, point1: Point, point2: Point):
         self.point1 = point1
         self.point2 = point2
+        self.vector = np.array(
+            [point2.x - point1.x, point2.y - point1.y, point2.z - point1.z],
+            dtype=np.float64,
+        )
+        self.length_squared = np.dot(self.vector, self.vector)
+        self.length = np.sqrt(self.length_squared)
 
     @classmethod
-    def get_from_user(cls, title: str = "Set P1/P2") -> "PointPair":
+    def get_from_user(cls, title: str = "Set P1/P2") -> "Segment":
         """Let the user pick two points on the map. Returns (p1, p2) with p1/p2 as (x, y, z) in RD."""
         import tkinter as tk
 
@@ -91,18 +132,6 @@ class PointPair:
         return cls(Point(*p1), Point(*p2))
 
 
-class Segment:
-    def __init__(self, point1: Point, point2: Point):
-        self.point1 = point1
-        self.point2 = point2
-        self.vector = np.array(
-            [point2.x - point1.x, point2.y - point1.y, point2.z - point1.z],
-            dtype=np.float64,
-        )
-        self.length_squared = np.dot(self.vector, self.vector)
-        self.length = np.sqrt(self.length_squared)
-
-
 class Cylinder:
     def __init__(self, segment: Segment, radius: float):
         self.segment = segment
@@ -146,7 +175,7 @@ def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndar
 
     # calculate query radius knowing R_sphere = sqrt(r_cylinder² + (step²/4))
     query_radius = np.sqrt(radius**2 + (step**2 / 4))
-    candidate_lists = KDtree.query_ball_point(samples, r=query_radius)
+    candidate_lists = KDtree.query_ball_point(samples, r=query_radius, workers=1)  # workers=-1 causes to much overhead for small queries.
 
     if len(candidate_lists) == 0:
         return np.array([], dtype=np.int64)
@@ -154,7 +183,7 @@ def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndar
     return np.unique(np.concatenate([np.asarray(candidate, dtype=np.int64) for candidate in candidate_lists]))
 
 
-def get_PDAL_bounds_for_runs(point_pairs: list[PointPair], radius: float) -> str:
+def get_PDAL_bounds_for_runs(point_pairs: list[Segment], radius: float) -> str:
     """Calculate the bounding box that contains all point pairs, expanded by the radius."""
     all_points = np.array(
         [pair.point1.array_coords for pair in point_pairs] + [pair.point2.array_coords for pair in point_pairs],
@@ -184,7 +213,7 @@ def write_to_copc(points_in_cylindar: np.ndarray, output_path: Path):
 
 
 @timed("Loading points for runs")
-def load_points_for_runs(point_pairs: list[PointPair], radius: float, input_path: Path = DEFAULT_INPUT) -> tuple[np.ndarray, np.ndarray, cKDTree]:
+def load_points_for_runs(point_pairs: list[Segment], radius: float, input_path: Path = DEFAULT_INPUT) -> tuple[np.ndarray, np.ndarray, cKDTree]:
     """
     Load points from the input file that fall within a bounding box defined by the point pairs and radius.
     """
@@ -367,17 +396,17 @@ def calculate_intervisibility(
     return visibility
 
 
-def generate_example_points(base_p1: Point, base_p2: Point, num_pairs: int) -> list[PointPair]:
+def generate_example_points(base_p1: Point, base_p2: Point, num_pairs: int) -> list[Segment]:
     point_pairs = []
     for i in range(num_pairs):
         p1 = Point(base_p1.x + i, base_p1.y, base_p1.z)
         p2 = Point(base_p2.x + i, base_p2.y, base_p2.z)
-        point_pairs.append(PointPair(p1, p2))
+        point_pairs.append(Segment(p1, p2))
     return point_pairs
 
 
 def calculate_point_to_multiple_points(
-    base_pair: PointPair,
+    base_pair: Segment,
     radius: float,
     runs: int,
 ) -> None:
@@ -403,7 +432,7 @@ def calculate_point_to_multiple_points(
     return LoS_counts
 
 
-def calculate_point_to_point(point_pair: PointPair, radius: float) -> float:
+def calculate_point_to_point(point_pair: Segment, radius: float) -> float:
     array_points, array_coords, KDtree = load_points_for_runs([point_pair], radius)
     if array_points is None:
         logger.warning("No points loaded for the requested point pair.")
@@ -450,7 +479,7 @@ def calculate_viewshed(
     # Load all points in the bounding box around the target
     # Create a dummy pair so we can reuse load_points_for_runs with search_radius
     # Code is **** ugly but it will work for now
-    dummy_pair = PointPair(target, target)
+    dummy_pair = Segment(target, target)
     array_points, array_coords, KDtree = load_points_for_runs([dummy_pair], search_radius, input_path=input_path)
 
     # Select points within search_radius of the target
@@ -493,8 +522,8 @@ def calculate_viewshed(
 
 
 if __name__ == "__main__":
-    city_block = PointPair(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
-    park = PointPair(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
+    city_block = Segment(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
+    park = Segment(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
     point_pair = park
     radius = 0.15
 
@@ -504,7 +533,7 @@ if __name__ == "__main__":
     # thinning_factor = 10
     # calculate_viewshed(target, search_radius, radius, thinning_factor=thinning_factor)
 
-    pair = PointPair.get_from_user("Select points for intervisibility")
+    pair = Segment.get_from_user("Select points for intervisibility")
     radius = 3.0
     visibility = calculate_point_to_point(pair, radius)
     logger.info(f"Calculated visibility: {visibility:.4f}")
