@@ -52,17 +52,19 @@ def compare(
     for _ in range(runs):
         result1 = func_old(*args, **kwargs)
     end = time.perf_counter()
-    tot_old = end - start
+    old_time = end - start
 
     start_2 = time.perf_counter()
     for _ in range(runs):
         result2 = func_new(*args, **kwargs)
     end_2 = time.perf_counter()
-    tot_new = end_2 - start_2
+    new_time = end_2 - start_2
 
-    logger.info(
-        f"Total runtime over {runs} runs - old: {tot_old:.6f} s, new: {tot_new:.6f} s \n new/old ratio was {tot_new / tot_old}",
-    )
+    speedup = old_time / new_time
+    logger.info(f"Old time: {old_time:.3f}s")
+    logger.info(f"New time: {new_time:.3f}s")
+    logger.info(f"Speedup: {speedup:.2f}x faster")
+
     if np.array_equal(result1, result2):
         logger.info("Both functions produced the same results.")
     else:
