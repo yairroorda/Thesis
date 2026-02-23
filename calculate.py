@@ -6,7 +6,7 @@ from scipy.spatial import cKDTree
 from tqdm import tqdm
 from pathlib import Path
 
-from utils import timed, get_logger, compare_speed, compare_outcomes
+from utils import timed, get_logger, compare
 from gui import make_map, _TO_RD
 
 

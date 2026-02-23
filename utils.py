@@ -40,35 +40,29 @@ def get_logger(name="thesis"):
     return logger
 
 
-def compare_speed(
+def compare(
     logger: logging.Logger,
     func_old,
     func_new,
     *args,
-    runs: int = 1000,
+    runs: int = 1,
     **kwargs,
 ) -> dict[str, float]:
     start = time.perf_counter()
     for _ in range(runs):
-        func_old(*args, **kwargs)
+        result1 = func_old(*args, **kwargs)
     end = time.perf_counter()
     tot_old = end - start
 
     start_2 = time.perf_counter()
     for _ in range(runs):
-        func_new(*args, **kwargs)
+        result2 = func_new(*args, **kwargs)
     end_2 = time.perf_counter()
     tot_new = end_2 - start_2
 
     logger.info(
         f"Total runtime over {runs} runs - old: {tot_old:.6f} s, new: {tot_new:.6f} s \n new/old ratio was {tot_new / tot_old}",
     )
-    return {"old": tot_old, "new": tot_new}
-
-
-def compare_outcomes(logger, func1, func2):
-    result1 = func1()
-    result2 = func2()
     if np.array_equal(result1, result2):
         logger.info("Both functions produced the same results.")
     else:
