@@ -256,53 +256,7 @@ def load_points_for_runs(point_pairs: list[Segment], radius: float, input_path: 
     return array_points, array_coords, KDtree
 
 
-@timed("Line of sight calculation")
-def calculate_number_of_points_in_cylinder(
-    cylinder: Cylinder,
-    array_points: np.ndarray,
-    array_coords: np.ndarray,
-    KDtree: cKDTree,
-    output_path: Path = DEFAULT_OUTPUT,
-) -> int:
-    """Filter points within a radius of the line connecting point1 and point2."""
-
-    if array_points is None or array_coords is None or KDtree is None:
-        logger.error("Points, coordinates, and tree must be provided for line of sight calculation.")
-        raise ValueError("Points, coordinates, and tree must be provided for line of sight calculation.")
-
-    if cylinder.segment.length == 0.0:
-        logger.error("Point1 and Point2 cannot be the same for line of sight calculation.")
-        raise ValueError("Point1 and Point2 cannot be the same for line of sight calculation.")
-
-    array_candidate_indices = get_kdtree_candidate_indices(KDtree, cylinder)
-
-    if array_candidate_indices.size == 0:
-        logger.warning("No candidate points found near the line of sight.")
-        return 0
-
-    candidate_coords = array_coords[array_candidate_indices]
-    distance_mask, _ = get_distance_mask(candidate_coords, cylinder)
-    filtered = array_points[array_candidate_indices[distance_mask]]
-    logger.debug(f"Filtered points count: {filtered.size}")
-
-    if filtered.size == 0:
-        logger.warning("No points found within the specified radius of the line of sight.")
-        return 0
-
-    if "Classification" in filtered.dtype.names:
-        classes, counts = np.unique(filtered["Classification"], return_counts=True)
-        summary = ", ".join(f"{point_class}:{point_count}" for point_class, point_count in zip(classes, counts))
-        logger.info(f"Class counts: {summary}")
-    else:
-        logger.warning("Classification dimension not found")
-
-    if WRITE_TO_FILE:
-        write_to_copc(filtered, output_path)
-
-    return filtered.size
-
-
-# @timed("Intervisibility calculation")
+@timed("Intervisibility calculation")
 def calculate_intervisibility(
     cylinder: Cylinder,
     array_points: np.ndarray,
@@ -393,7 +347,6 @@ def calculate_intervisibility(
             terrain_density = terrain_count / cross_section_area
 
             if terrain_density >= TERRAIN_DENSITY_THRESHOLD:
-                # logger.info(f"Step {current_global_step + 1}/{num_steps}: terrain density {terrain_density:.2f} >= threshold {TERRAIN_DENSITY_THRESHOLD} – blocked.")
                 return 0.0
 
             # Check threshold for buildings
@@ -401,7 +354,6 @@ def calculate_intervisibility(
             building_density = building_count / cross_section_area
 
             if building_density >= BUILDING_DENSITY_THRESHOLD:
-                # logger.info(f"Step {current_global_step + 1}/{num_steps}: building density {building_density:.2f} >= threshold {BUILDING_DENSITY_THRESHOLD} – blocked.")
                 return 0.0
 
             # Decrease visibility for vegetation
@@ -412,47 +364,10 @@ def calculate_intervisibility(
                 actual_step = step_length if current_global_step < num_steps - 1 else segment.length - current_global_step * step_length
                 attenuation = np.exp(-BEER_LAMBERT_COEFFICIENT * vegetation_density * actual_step)
                 visibility *= attenuation
-                # logger.debug(f"Step {i + 1}/{num_steps}: veg density {vegetation_density:.2f}, attenuation {attenuation:.4f}, visibility now {visibility:.4f}")
 
     visibility = float(np.clip(visibility, 0.0, 1.0))
     # logger.info(f"Final visibility: {visibility:.4f}")
     return visibility
-
-
-def generate_example_points(base_p1: Point, base_p2: Point, num_pairs: int) -> list[Segment]:
-    point_pairs = []
-    for i in range(num_pairs):
-        p1 = Point(base_p1.x + i, base_p1.y, base_p1.z)
-        p2 = Point(base_p2.x + i, base_p2.y, base_p2.z)
-        point_pairs.append(Segment(p1, p2))
-    return point_pairs
-
-
-def calculate_point_to_multiple_points(
-    base_pair: Segment,
-    radius: float,
-    runs: int,
-) -> None:
-    point_pairs = generate_example_points(base_pair.point1, base_pair.point2, runs)
-    array_points, array_coords, KDtree = load_points_for_runs(point_pairs, radius)
-    if array_points is None:
-        logger.warning("No points loaded for the requested runs.")
-    else:
-        LoS_counts: dict[int, int] = {}
-        for Los_index, point_pair in enumerate(point_pairs, start=1):
-            output_path = DEFAULT_OUTPUT.parent / f"output_{Los_index}.copc.laz"
-            segment = Segment(point_pair.point1, point_pair.point2)
-            cylinder = Cylinder(segment, radius)
-            number_of_points = calculate_number_of_points_in_cylinder(
-                cylinder,
-                array_points,
-                array_coords,
-                KDtree,
-                output_path=output_path,
-            )
-            logger.debug(f"Run {Los_index}/{runs}: processed {number_of_points} points")
-            LoS_counts[Los_index] = number_of_points
-    return LoS_counts
 
 
 def calculate_point_to_point(point_pair: Segment, radius: float) -> float:
@@ -552,13 +467,23 @@ if __name__ == "__main__":
     point_pair = park
     radius = 0.15
 
-    # # Viewshed
-    # target = Point(233974.5, 582114.2, 5.0)
-    # search_radius = 50
-    # thinning_factor = 10
+    # Viewshed
+    target = Point(233974.5, 582114.2, 5.0)
+    search_radius = 100
+    thinning_factor = 10
+    chunk_size = 5
+    array_points, array_coords, Kdtree = load_points_for_runs([point_pair], radius)
+    cylinder = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
+
+    # compare(logger, lambda: calculate_intervisibility(cylinder=cylinder, array_points=array_points, array_coords=array_coords, KDtree=Kdtree), lambda: calculate_intervisibility_3(cylinder=cylinder, array_points=array_points, array_coords=array_coords, KDtree=Kdtree), runs=10000)
+    # compare(
+    #     logger,
+    #     lambda: calculate_viewshed(target=target, search_radius=search_radius, cylinder_radius=radius, input_path=DEFAULT_INPUT, output_path=DEFAULT_OUTPUT, thinning_factor=thinning_factor, intervisibility_func=calculate_intervisibility),
+    #     lambda: calculate_viewshed(target=target, search_radius=search_radius, cylinder_radius=radius, input_path=DEFAULT_INPUT, output_path=DEFAULT_OUTPUT, thinning_factor=thinning_factor, intervisibility_func=calculate_intervisibility_2),
+    # )
     # calculate_viewshed(target, search_radius, radius, thinning_factor=thinning_factor)
 
-    pair = Segment.get_from_user("Select points for intervisibility")
-    radius = 3.0
-    visibility = calculate_point_to_point(pair, radius)
-    logger.info(f"Calculated visibility: {visibility:.4f}")
+    # pair = Segment.get_from_user("Select points for intervisibility")
+    # radius = 3.0
+    # visibility = calculate_point_to_point(pair, radius)
+    # logger.info(f"Calculated visibility: {visibility:.4f}")
