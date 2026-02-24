@@ -100,12 +100,18 @@ def download_ahn_index(index_url, target_dir: Path = DATA_DIR):
     return local_path
 
 
-def query_tiles_2d(tile_urls, wkt_polygon):
+def query_tiles_2d(tile_urls, wkt_polygon, filetype="COPC"):
+
     # Create a reader for every tile URL
-    pipeline_def = [{"type": "readers.copc", "filename": url, "requests": 16} for url in tile_urls]
+
+    if filetype == "COPC":
+        pipeline_def = [{"type": "readers.copc", "filename": url, "requests": 16} for url in tile_urls]
+    else:
+        pipeline_def = [{"type": "readers.las", "filename": url} for url in tile_urls]
 
     # Add Merge, Crop, and Writer to the list
-    pipeline_def.extend([{"type": "filters.merge"}, {"type": "filters.crop", "polygon": wkt_polygon}, {"type": "writers.copc", "filename": str(DATA_DIR / "output_merged.copc.laz"), "forward": "all"}])
+
+    pipeline_def.extend([{"type": "filters.merge"}, {"type": "filters.crop", "polygon": wkt_polygon}, {"type": "writers.copc", "filename": str(DATA_DIR / "output_merged_test.copc.laz"), "forward": "all"}])
 
     try:
         pipeline = pdal.Pipeline(json.dumps(pipeline_def))
@@ -116,6 +122,18 @@ def query_tiles_2d(tile_urls, wkt_polygon):
 
 
 def find_tiles(gdf_polygon):
+    # try:
+    #     return "COPC", find_tiles_ahn6(gdf_polygon)
+    # except Exception as e:
+    #     logger.warning(f"Failed to find AHN6 tiles: {e}. Attempting to find AHN5 tiles instead.")
+    try:
+        return "LAS", find_tiles_ahn5(gdf_polygon)
+    except Exception as e:
+        logger.error(f"Failed to find AHN5 tiles: {e}")
+        raise
+
+
+def find_tiles_ahn6(gdf_polygon):
     """Find the relevant AHN6 tiles for a given polygon."""
     # Load AHN6 tile index
     index_url = "https://basisdata.nl/hwh-ahn/AUX/bladwijzer_AHN6.gpkg"
@@ -144,6 +162,24 @@ def find_tiles(gdf_polygon):
     return tile_urls
 
 
+def find_tiles_ahn5(gdf_polygon):
+    """Extract AHN5 URLs directly from the master bladwijzer index."""
+    # Use the master index you found
+    index_url = "https://basisdata.nl/hwh-ahn/AUX/bladwijzer.gpkg"
+    local_index_path = download_ahn_index(index_url)
+    index_gdf = gpd.read_file(local_index_path, layer="EllipsisDrive_index")
+
+    # Spatial join to find intersecting tiles
+    intersecting_tiles = gpd.sjoin(index_gdf, gdf_polygon, how="inner", predicate="intersects")
+
+    tile_urls = []
+    for _, row in intersecting_tiles.iterrows():
+        # the 'AHN5_LAZ' column contains the direct URL to the AHN5 tile
+        tile_urls.append(row["AHN5_LAZ"])
+
+    return tile_urls
+
+
 @timed("COPC query")
 def query_ahn_2d(polygon: Polygon | None = None, polygon_path: Path | None = None):
     if polygon is not None:
@@ -151,11 +187,13 @@ def query_ahn_2d(polygon: Polygon | None = None, polygon_path: Path | None = Non
     else:
         gdf = gpd.read_file(polygon_path)
 
-    wkt_polygon_AHN6 = gdf.geometry.iloc[0].wkt  # type:ignore
+    wkt_polygon = gdf.geometry.iloc[0].wkt  # type:ignore
 
-    remote_url_AHN6 = find_tiles(gdf)
+    filetype, remote_url = find_tiles(gdf)
+    logger.info(f"Found {len(remote_url)} tiles intersecting the polygon.")
+    logger.debug(f"AHN5 tile URLs: {remote_url}")
 
-    query_tiles_2d(tile_urls=remote_url_AHN6, wkt_polygon=wkt_polygon_AHN6)
+    query_tiles_2d(tile_urls=remote_url, wkt_polygon=wkt_polygon, filetype=filetype)
 
 
 if __name__ == "__main__":
