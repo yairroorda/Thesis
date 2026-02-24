@@ -458,7 +458,8 @@ def calculate_viewshed(
         out_array[name] = thinned_points[name]
     out_array["Visibility"] = visibility_values
 
-    write_to_copc(out_array, output_path)
+    if WRITE_TO_FILE:
+        write_to_copc(out_array, output_path)
 
 
 if __name__ == "__main__":
@@ -481,7 +482,6 @@ if __name__ == "__main__":
     #     lambda: calculate_viewshed(target=target, search_radius=search_radius, cylinder_radius=radius, input_path=DEFAULT_INPUT, output_path=DEFAULT_OUTPUT, thinning_factor=thinning_factor, intervisibility_func=calculate_intervisibility),
     #     lambda: calculate_viewshed(target=target, search_radius=search_radius, cylinder_radius=radius, input_path=DEFAULT_INPUT, output_path=DEFAULT_OUTPUT, thinning_factor=thinning_factor, intervisibility_func=calculate_intervisibility_2),
     # )
-    # calculate_viewshed(target, search_radius, radius, thinning_factor=thinning_factor)
 
     # pair = Segment.get_from_user("Select points for intervisibility")
     # radius = 3.0
