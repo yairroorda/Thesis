@@ -5,7 +5,12 @@ from enhance_facades import generate_facades
 from query_copc import Polygon
 from query_copc import query_ahn_2d as query_copc
 from segment import classify_vegetation_rule_based as classify_vegetation
+<<<<<<< HEAD
 from utils import get_logger, timed
+=======
+from calculate import Point, Segment, calculate_point_to_point, calculate_viewshed
+from utils import timed, get_logger
+>>>>>>> 88a92d3 (Trying to support AHN5 as a fallback)
 
 logger = get_logger(name="Main")
 
@@ -51,6 +56,16 @@ def main():
     # radius = 3.0
     # visibility = calculate_point_to_point(pair, radius)
     # print(f"Calculated visibility: {visibility:.4f}")
+<<<<<<< HEAD
+=======
+
+    search_radius = 50.0
+    thinning_factor = 1
+    radius = 3.0
+
+    source = Point.get_from_user("Select source point for viewshed")
+    calculate_viewshed(source, search_radius, radius, thinning_factor=thinning_factor)
+>>>>>>> 88a92d3 (Trying to support AHN5 as a fallback)
 
 
 if __name__ == "__main__":
