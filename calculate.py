@@ -26,6 +26,7 @@ TERRAIN_DENSITY_THRESHOLD = 14
 BUILDING_DENSITY_THRESHOLD = 14
 VEGETATION_DENSITY_THRESHOLD = 1
 BEER_LAMBERT_COEFFICIENT = 0.05
+DEFAULT_CHUNK_SIZE = 3.0
 
 
 class Point:
@@ -307,6 +308,8 @@ def calculate_intervisibility(
     array_points: np.ndarray,
     array_coords: np.ndarray,
     KDtree: cKDTree,
+    chunk_size: float = DEFAULT_CHUNK_SIZE,
+    distance_mask_function: callable = get_distance_mask,
 ) -> float:
     """
     Walk the line of sight from source to target in steps and compute a
@@ -325,71 +328,91 @@ def calculate_intervisibility(
     radius = float(cylinder.radius)
     cross_section_area = np.pi * radius**2
 
-    # Get all points inside the cylinder
-    candidate_indices = get_kdtree_candidate_indices(KDtree, cylinder)
-
-    candidate_coords = array_coords[candidate_indices]
-    distance_mask, t_all = get_distance_mask(candidate_coords, cylinder)
-    filtered_indices = candidate_indices[distance_mask]
-
-    if filtered_indices.size == 0:
-        # logger.info("No points in cylinder – full visibility.")
-        return 1.0
-
-    filtered_points = array_points[filtered_indices]
-    t_values = t_all[distance_mask]  # reuse projection parameters from get_distance_mask
-
-    # if WRITE_TO_FILE:
-    #     write_to_copc(filtered_points, DEFAULT_OUTPUT)
-
     # Define step bins along the segment
     step_length = radius  # same step size used by the KD-tree sampler
     num_steps = max(1, int(np.ceil(segment.length / step_length)))
-    bin_edges = np.linspace(0.0, 1.0, num_steps + 1)
 
-    # Pre-fetch classifications
-    classifications = filtered_points["Classification"]
-
-    # Masks per class (computed once)
-    terrain_mask = classifications == CLASS_TERRAIN
-    building_mask = classifications == CLASS_BUILDING
-    vegetation_mask = np.isin(classifications, list(CLASS_VEGETATION))
+    # Calculate how many steps fit into one chunk
+    steps_per_chunk = max(1, int(np.round(chunk_size / step_length)))
+    query_radius = np.sqrt(radius**2 + (step_length**2 / 4))
 
     # Walk the LoS
     visibility = 1.0
 
-    for i in range(num_steps):
-        t_lo, t_hi = bin_edges[i], bin_edges[i + 1]
-        in_bin = (t_values >= t_lo) & (t_values < t_hi)
-        # Include the endpoint in the last bin
-        if i == num_steps - 1:
-            in_bin |= t_values == t_hi
+    # Iterate through the LoS in chunks
+    for start_step in range(0, num_steps, steps_per_chunk):
+        end_step = min(start_step + steps_per_chunk, num_steps)
 
-        # Check threshold for terrain
-        terrain_count = int(np.count_nonzero(in_bin & terrain_mask))
-        terrain_density = terrain_count / cross_section_area
+        # Generate sample points
+        t_chunk = np.linspace(start_step / num_steps, end_step / num_steps, (end_step - start_step) + 1)
+        chunk_samples = segment.point1.array_coords + t_chunk[:, None] * segment.vector
 
-        if terrain_density >= TERRAIN_DENSITY_THRESHOLD:
-            # logger.info(f"Step {i + 1}/{num_steps}: terrain density {terrain_density:.2f} >= threshold {TERRAIN_DENSITY_THRESHOLD} – blocked.")
-            return 0.0
+        # Batch query the KDTree for the chunk
+        candidate_lists = KDtree.query_ball_point(chunk_samples, r=query_radius)
 
-        # Check threshold for buildings
-        building_count = int(np.count_nonzero(in_bin & building_mask))
-        building_density = building_count / cross_section_area
+        # Filter out empty lists and flatten unique indices
+        valid_candidates = [c for c in candidate_lists if c]
+        if not valid_candidates:
+            continue
 
-        if building_density >= BUILDING_DENSITY_THRESHOLD:
-            # logger.info(f"Step {i + 1}/{num_steps}: building density {building_density:.2f} >= threshold {BUILDING_DENSITY_THRESHOLD} – blocked.")
-            return 0.0
+        flat_indices = np.unique(np.concatenate([np.asarray(c, dtype=np.int64) for c in valid_candidates]))
 
-        # Decrease visibility for vegetation
-        vegetation_count = int(np.count_nonzero(in_bin & vegetation_mask))
-        vegetation_density = vegetation_count / cross_section_area
+        # 3. Filter points to the cylinder and get their T-values
+        candidate_coords = array_coords[flat_indices]
+        distance_mask, t_all = distance_mask_function(candidate_coords, cylinder)
+        filtered_indices = flat_indices[distance_mask]
 
-        if vegetation_density >= VEGETATION_DENSITY_THRESHOLD:
-            actual_step = step_length if i < num_steps - 1 else segment.length - i * step_length
-            attenuation = np.exp(-BEER_LAMBERT_COEFFICIENT * vegetation_density * actual_step)
-            visibility *= attenuation
-            # logger.debug(f"Step {i + 1}/{num_steps}: veg density {vegetation_density:.2f}, attenuation {attenuation:.4f}, visibility now {visibility:.4f}")
+        if filtered_indices.size == 0:
+            continue
+
+        filtered_points = array_points[filtered_indices]
+        t_values = t_all[distance_mask]
+
+        # Pre-fetch classifications
+        classifications = filtered_points["Classification"]
+
+        # Masks per class (computed once)
+        terrain_mask = classifications == CLASS_TERRAIN
+        building_mask = classifications == CLASS_BUILDING
+        vegetation_mask = np.isin(classifications, list(CLASS_VEGETATION))
+
+        # Step through the bins inside this specific chunk
+        bin_edges = np.linspace(start_step / num_steps, end_step / num_steps, (end_step - start_step) + 1)
+
+        for j in range(len(bin_edges) - 1):
+            t_lo, t_hi = bin_edges[j], bin_edges[j + 1]
+            in_bin = (t_values >= t_lo) & (t_values < t_hi)
+
+            # Include the endpoint in the last bin
+            current_global_step = start_step + j
+            if current_global_step == num_steps - 1:
+                in_bin |= t_values == t_hi
+
+            # Check threshold for terrain
+            terrain_count = int(np.count_nonzero(in_bin & terrain_mask))
+            terrain_density = terrain_count / cross_section_area
+
+            if terrain_density >= TERRAIN_DENSITY_THRESHOLD:
+                # logger.info(f"Step {current_global_step + 1}/{num_steps}: terrain density {terrain_density:.2f} >= threshold {TERRAIN_DENSITY_THRESHOLD} – blocked.")
+                return 0.0
+
+            # Check threshold for buildings
+            building_count = int(np.count_nonzero(in_bin & building_mask))
+            building_density = building_count / cross_section_area
+
+            if building_density >= BUILDING_DENSITY_THRESHOLD:
+                # logger.info(f"Step {current_global_step + 1}/{num_steps}: building density {building_density:.2f} >= threshold {BUILDING_DENSITY_THRESHOLD} – blocked.")
+                return 0.0
+
+            # Decrease visibility for vegetation
+            vegetation_count = int(np.count_nonzero(in_bin & vegetation_mask))
+            vegetation_density = vegetation_count / cross_section_area
+
+            if vegetation_density >= VEGETATION_DENSITY_THRESHOLD:
+                actual_step = step_length if current_global_step < num_steps - 1 else segment.length - current_global_step * step_length
+                attenuation = np.exp(-BEER_LAMBERT_COEFFICIENT * vegetation_density * actual_step)
+                visibility *= attenuation
+                # logger.debug(f"Step {i + 1}/{num_steps}: veg density {vegetation_density:.2f}, attenuation {attenuation:.4f}, visibility now {visibility:.4f}")
 
     visibility = float(np.clip(visibility, 0.0, 1.0))
     # logger.info(f"Final visibility: {visibility:.4f}")
@@ -455,6 +478,8 @@ def calculate_viewshed(
     input_path: Path = DEFAULT_INPUT,
     output_path: Path = DEFAULT_OUTPUT,
     thinning_factor: int = 1,
+    intervisibility_func: callable = calculate_intervisibility,
+    chunk_size: float = DEFAULT_CHUNK_SIZE,
 ) -> None:
     """
     For every point within search_radius of target, compute the intervisibility
@@ -504,7 +529,7 @@ def calculate_viewshed(
 
         segment = Segment(target, dest)
         cylinder = Cylinder(segment, cylinder_radius)
-        visibility_values[i] = calculate_intervisibility(cylinder, array_points, array_coords, KDtree)
+        visibility_values[i] = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
 
     # Build output array with Visibility dimension (only thinned points)
     thinned_points = array_points[thinned_sphere_indices]
