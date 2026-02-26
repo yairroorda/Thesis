@@ -12,3 +12,4 @@ dependencies:
   - pip:
       - pdal-plugins==1.6.6
       - tkintermapview==1.29
+      - nlmod==0.11.2
