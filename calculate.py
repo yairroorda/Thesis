@@ -5,7 +5,10 @@ import sys
 from scipy.spatial import cKDTree
 from tqdm import tqdm
 from pathlib import Path
+from shapely.prepared import prep
+from shapely.geometry import Point as ShapelyPoint
 
+from query_copc import Polygon
 from utils import timed, get_logger, compare
 from gui import make_map, _TO_RD
 
@@ -139,6 +142,57 @@ class Cylinder:
         self.radius = radius
 
 
+def generate_grid(Area: Polygon, resolution: int, z_height: float = 0.0):
+    min_x, min_y, max_x, max_y = Area.bounds
+
+    # Create the 2D base
+    x_coords = np.arange(min_x, max_x, resolution)
+    y_coords = np.arange(min_y, max_y, resolution)
+    xv, yv = np.meshgrid(x_coords, y_coords)
+    points_2d = np.stack([xv.ravel(), yv.ravel()], axis=-1)
+
+    # Create the Z layers
+    if z_height > 0:
+        z_coords = np.arange(0, z_height, resolution)
+    else:
+        z_coords = [0.0]
+
+    # Bake polygon for speed
+    prepared_area = prep(Area)
+
+    final_points = []
+
+    # Filter and Generate 3D points
+    for x, y in points_2d:
+        if prepared_area.contains(ShapelyPoint(x, y)):
+            for z in z_coords:
+                final_points.append(Point(x, y, float(z)))
+
+    return final_points
+
+
+def export_grid_to_copc(grid_points: list[Point], output_path: Path):
+    """
+    Exports the generated 3D grid to a COPC (.copc.laz) file for CloudCompare.
+    """
+
+    dtype = [
+        ("X", "f8"),
+        ("Y", "f8"),
+        ("Z", "f8"),
+    ]
+
+    # 2. Create the structured array
+    # If you miss the 'dtype=' argument here, point_data["X"] will fail.
+    point_data = np.empty(len(grid_points), dtype=dtype)
+
+    point_data["X"] = np.array([pt.x for pt in grid_points])
+    point_data["Y"] = np.array([pt.y for pt in grid_points])
+    point_data["Z"] = np.array([pt.z for pt in grid_points])
+
+    write_to_copc(point_data, output_path)
+
+
 def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> tuple[np.ndarray[bool], np.ndarray[float]]:
     segment = cylinder.segment
     radius = float(cylinder.radius)
@@ -256,7 +310,7 @@ def load_points_for_runs(point_pairs: list[Segment], radius: float, input_path: 
     return array_points, array_coords, KDtree
 
 
-@timed("Intervisibility calculation")
+# @timed("Intervisibility calculation")
 def calculate_intervisibility(
     cylinder: Cylinder,
     array_points: np.ndarray,
