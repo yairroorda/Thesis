@@ -439,6 +439,51 @@ def calculate_point_to_point(point_pair: Segment, radius: float) -> float:
     return visibility
 
 
+def calculate_viewshed_for_grid(
+    target: Point,
+    grid_points: list[Point],
+    cylinder_radius: float,
+    input_path: Path = DEFAULT_INPUT,
+    output_path: Path = DEFAULT_OUTPUT,
+    intervisibility_func: callable = calculate_intervisibility,
+    chunk_size: float = DEFAULT_CHUNK_SIZE,
+) -> None:
+    """
+    For every point in the grid, compute visibility from target to that point
+    and write the result as a new 'Visibility' dimension in a COPC file.
+    """
+    # Load points from AHN with a dummy pair for now
+    dummy_pair = Segment(target, target)
+
+    grid_coords = np.array([pt.array_coords for pt in grid_points])
+    max_dist = np.max(np.linalg.norm(grid_coords - target.array_coords, axis=1))
+
+    array_points, array_coords, KDtree = load_points_for_runs([dummy_pair], max_dist, input_path=input_path)
+
+    logger.info(f"Computing visibility for {len(grid_points)} grid points.")
+
+    visibility_values = np.zeros(len(grid_points), dtype=np.float64)
+
+    for i, dest in enumerate(tqdm(grid_points, desc="Grid Viewshed", unit="pts")):
+        segment = Segment(target, dest)
+        cylinder = Cylinder(segment, cylinder_radius)
+
+        # Calculate visibility
+        visibility_values[i] = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
+
+    # Build output array
+    dtype = [("X", "<f8"), ("Y", "<f8"), ("Z", "<f8"), ("Visibility", "<f8")]
+    out_array = np.empty(len(grid_points), dtype=dtype)
+
+    out_array["X"] = grid_coords[:, 0]
+    out_array["Y"] = grid_coords[:, 1]
+    out_array["Z"] = grid_coords[:, 2]
+    out_array["Visibility"] = visibility_values
+
+    if WRITE_TO_FILE:
+        write_to_copc(out_array, output_path)
+
+
 @timed("Viewshed calculation")
 def calculate_viewshed(
     target: Point,
