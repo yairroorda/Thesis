@@ -561,28 +561,54 @@ def calculate_viewshed(
         write_to_copc(out_array, output_path)
 
 
-if __name__ == "__main__":
-    city_block = Segment(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
-    park = Segment(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
-    point_pair = park
+def demo_viewshed_from_grid():
+    target = Point.get_from_user("Select target point for viewshed calculation")
+    area = Polygon.get_from_user("Select area for grid generation")
+    resolution = 1.0
+    grid_points = generate_grid(area, resolution, z_height=40.0)
     radius = 0.15
+    chunk_size = 5
+    # export_grid_to_copc(grid_points, output_path="data/grid_points.copc.laz")
+    calculate_viewshed_for_grid(
+        target=target,
+        grid_points=grid_points,
+        cylinder_radius=radius,
+        input_path=DEFAULT_INPUT,
+        output_path=DEFAULT_OUTPUT,
+        intervisibility_func=calculate_intervisibility,
+        chunk_size=chunk_size,
+    )
 
-    # Viewshed
+
+def demo_viewshed_from_cloud():
     target = Point(233974.5, 582114.2, 5.0)
     search_radius = 100
+    radius = 0.15
     thinning_factor = 10
     chunk_size = 5
-    array_points, array_coords, Kdtree = load_points_for_runs([point_pair], radius)
-    cylinder = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
+    calculate_viewshed(
+        target=target,
+        search_radius=search_radius,
+        cylinder_radius=radius,
+        input_path=DEFAULT_INPUT,
+        output_path=DEFAULT_OUTPUT,
+        thinning_factor=thinning_factor,
+        intervisibility_func=calculate_intervisibility,
+        chunk_size=chunk_size,
+    )
 
-    # compare(logger, lambda: calculate_intervisibility(cylinder=cylinder, array_points=array_points, array_coords=array_coords, KDtree=Kdtree), lambda: calculate_intervisibility_3(cylinder=cylinder, array_points=array_points, array_coords=array_coords, KDtree=Kdtree), runs=10000)
-    # compare(
-    #     logger,
-    #     lambda: calculate_viewshed(target=target, search_radius=search_radius, cylinder_radius=radius, input_path=DEFAULT_INPUT, output_path=DEFAULT_OUTPUT, thinning_factor=thinning_factor, intervisibility_func=calculate_intervisibility),
-    #     lambda: calculate_viewshed(target=target, search_radius=search_radius, cylinder_radius=radius, input_path=DEFAULT_INPUT, output_path=DEFAULT_OUTPUT, thinning_factor=thinning_factor, intervisibility_func=calculate_intervisibility_2),
-    # )
 
-    # pair = Segment.get_from_user("Select points for intervisibility")
-    # radius = 3.0
-    # visibility = calculate_point_to_point(pair, radius)
-    # logger.info(f"Calculated visibility: {visibility:.4f}")
+def demo_point_to_point():
+    pair = Segment.get_from_user("Select points for intervisibility")
+    radius = 0.15
+    visibility = calculate_point_to_point(pair, radius)
+    logger.info(f"Calculated visibility: {visibility:.4f}")
+
+
+if __name__ == "__main__":
+    # city_block = Segment(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
+    # park = Segment(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
+
+    # demo_point_to_point()
+    # demo_viewshed_from_cloud()
+    demo_viewshed_from_grid()
