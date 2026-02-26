@@ -2,6 +2,7 @@ import json
 import numpy as np
 import pdal
 import sys
+from nlmod.read import ahn
 from scipy.spatial import cKDTree
 from tqdm import tqdm
 from pathlib import Path
@@ -142,7 +143,7 @@ class Cylinder:
         self.radius = radius
 
 
-def generate_grid(Area: Polygon, resolution: int, z_height: float = 0.0):
+def generate_grid(Area: Polygon, resolution: int, z_height: float = 0.0) -> list[Point]:
     min_x, min_y, max_x, max_y = Area.bounds
 
     # Create the 2D base
@@ -561,6 +562,73 @@ def calculate_viewshed(
         write_to_copc(out_array, output_path)
 
 
+def _get_ground_elevations(points: list["Point"], buffer: float = 2.0) -> list[float]:
+
+    xs = [p.x for p in points]
+    ys = [p.y for p in points]
+
+    extent = [float(min(xs)) - buffer, float(max(xs)) + buffer, float(min(ys)) - buffer, float(max(ys)) + buffer]
+
+    logger.debug(f"Downloading AHN DTM for extent {extent}")
+
+    # Download AHN DTM tile for the given extent
+    try:
+        ahn_raster = ahn.download_latest_ahn_from_wcs(extent, identifier="dtm_05m")
+    except Exception as e:
+        raise RuntimeError(f"Failed to download AHN tile: {e}")
+
+    # Initialize last valid ground level to the mean of the raster
+    last_valid_ground = float(ahn_raster.mean(skipna=True).values)
+
+    # Extract elevations
+    ground_levels = []
+    for point in points:
+        try:
+            ground_level = float(ahn_raster.sel(x=point.x, y=point.y, method="nearest").values)
+        except Exception:
+            ground_level = np.nan
+
+        # Fill gaps with last valid ground level
+        if np.isnan(ground_level):
+            ground_level = last_valid_ground
+        else:
+            last_valid_ground = ground_level
+
+        ground_levels.append(ground_level)
+
+    return ground_levels
+
+
+def hag_to_nap(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
+    """
+    Converts a list of points from Height Above Ground (HAG) to NAP.
+    """
+    ground_levels = _get_ground_elevations(points, buffer)
+    translated_points = []
+
+    for point, ground in zip(points, ground_levels):
+        # NAP = HAG + Ground
+        z_nap = point.z + ground
+        translated_points.append(Point(point.x, point.y, z_nap))
+
+    return translated_points
+
+
+def nap_to_hag(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
+    """
+    Converts a list of points from NAP to Height Above Ground (HAG).
+    """
+    ground_levels = _get_ground_elevations(points, buffer)
+    translated_points = []
+
+    for point, ground in zip(points, ground_levels):
+        # HAG = NAP - Ground
+        z_hag = point.z - ground
+        translated_points.append(Point(point.x, point.y, z_hag))
+
+    return translated_points
+
+
 def demo_viewshed_from_grid():
     target = Point.get_from_user("Select target point for viewshed calculation")
     area = Polygon.get_from_user("Select area for grid generation")
@@ -605,10 +673,21 @@ def demo_point_to_point():
     logger.info(f"Calculated visibility: {visibility:.4f}")
 
 
+def dem_hag_grid():
+    area = Polygon.get_from_user("Select area for HAG grid generation")
+    grid_points = generate_grid(area, resolution=1.0, z_height=0.0)
+
+    nap_points = hag_to_nap(grid_points)
+
+    output_path = Path("data/hag_grid.copc.laz")
+    export_grid_to_copc(nap_points, output_path=output_path)
+
+
 if __name__ == "__main__":
     # city_block = Segment(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
     # park = Segment(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
 
     # demo_point_to_point()
     # demo_viewshed_from_cloud()
-    demo_viewshed_from_grid()
+    # demo_viewshed_from_grid()
+    dem_hag_grid()
