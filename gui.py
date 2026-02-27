@@ -36,8 +36,8 @@ def main():
 
     logger = get_logger(name="GUI Test")
 
-    # polygon = Polygon.get_from_user("Test polygon input")
-    # logger.info(f"Collected polygon: {polygon}")
+    polygon = Polygon.get_from_user("Test polygon input")
+    logger.info(f"Collected polygon: {polygon}")
     points = Segment.get_from_user("Test points input")
     logger.info(f"Collected points: SEGMENT(POINT({points.point1.x}, {points.point1.y}, {points.point1.z}), POINT({points.point2.x}, {points.point2.y}, {points.point2.z}))")
     point = Point.get_from_user("Test point input")
