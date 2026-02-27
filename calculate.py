@@ -66,6 +66,9 @@ class Point:
         pz.insert(0, "8.0")
         pz.pack(fill=tk.X)
 
+        is_hag = tk.BooleanVar(value=True)
+        tk.Checkbutton(controls, text="Z is HAG (vs NAP)", variable=is_hag).pack(anchor="w", pady=(5, 0))
+
         tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(10, 0))
         map_widget.add_left_click_map_command(on_click)
 
@@ -73,7 +76,9 @@ class Point:
 
         p = (*p_xy["v"], float(pz.get()))
         root.destroy()
-        return cls(*p)
+
+        pt = cls(*p)
+        return hag_to_nap([pt])[0] if is_hag.get() else pt
 
 
 class Segment:
@@ -126,6 +131,9 @@ class Segment:
         p2z.insert(0, "10.0")
         p2z.pack(fill=tk.X)
 
+        is_hag = tk.BooleanVar(value=True)
+        tk.Checkbutton(controls, text="Z is HAG (vs NAP)", variable=is_hag).pack(anchor="w", pady=(5, 0))
+
         tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(10, 0))
         map_widget.add_left_click_map_command(on_click)
 
@@ -134,7 +142,11 @@ class Segment:
         p1 = (*p1_xy["v"], float(p1z.get()))
         p2 = (*p2_xy["v"], float(p2z.get()))
         root.destroy()
-        return cls(Point(*p1), Point(*p2))
+
+        pts = [Point(*p1), Point(*p2)]
+        if is_hag.get():
+            pts = hag_to_nap(pts)
+        return cls(pts[0], pts[1])
 
 
 class Cylinder:
