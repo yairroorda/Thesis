@@ -1,9 +1,10 @@
 from pathlib import Path
 
-from query_copc import query_ahn_2d as query_copc, Polygon
-from segment import classify_vegetation_rule_based as classify_vegetation
 from calculate import Segment, calculate_point_to_point
-from utils import timed, get_logger
+from query_copc import Polygon
+from query_copc import query_ahn_2d as query_copc
+from segment import classify_vegetation_rule_based as classify_vegetation
+from utils import get_logger, timed
 
 logger = get_logger(name="Main")
 

@@ -1,18 +1,18 @@
 import json
+import sys
+from pathlib import Path
+
 import numpy as np
 import pdal
-import sys
 from nlmod.read import ahn
 from scipy.spatial import cKDTree
-from tqdm import tqdm
-from pathlib import Path
-from shapely.prepared import prep
 from shapely.geometry import Point as ShapelyPoint
+from shapely.prepared import prep
+from tqdm import tqdm
 
+from gui import _TO_RD, make_map
 from query_copc import Polygon
-from utils import timed, get_logger, compare
-from gui import make_map, _TO_RD
-
+from utils import compare, get_logger, timed
 
 logger = get_logger(name="Calculate")
 
