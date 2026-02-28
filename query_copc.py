@@ -149,7 +149,7 @@ def query_ahn_2d(polygon: Polygon | None = None, polygon_path: Path | None = Non
     if polygon is not None:
         gdf = gpd.GeoDataFrame(geometry=[polygon], crs="EPSG:28992")
     else:
-        gdf = gpd.read_file(polygon_path)
+        gdf = gpd.read_file(str(polygon_path))
 
     wkt_polygon_AHN6 = gdf.geometry.iloc[0].wkt  # type:ignore
 
