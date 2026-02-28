@@ -61,6 +61,33 @@ def classify_vegetation_rule_based(input_path: Path, output_path: Path):
         logger.error(f"Pipeline failed: {e}")
 
 
+@timed("Rescale AHN Colors")
+def rescale_ahn_colors(input_path: Path, output_path: Path):
+    """
+    Rescales AHN 16-bit colors (0-65535) to 8-bit (0-255)
+    to satisfy Myria3D normalization constraints.
+    """
+    pipeline_dict = {
+        "pipeline": [
+            {"type": "readers.las", "filename": str(input_path)},
+            {"type": "filters.assign", "value": ["Red=Red/256", "Green=Green/256", "Blue=Blue/256"]},
+            {"type": "writers.las", "filename": str(output_path), "compression": "laszip"},
+        ]
+    }
+
+    try:
+        # Converting the dict to a JSON string for PDAL
+        pipeline = pdal.Pipeline(json.dumps(pipeline_dict))
+        pipeline.execute()
+        logger.info(f"Rescaled colors saved to: {output_path}")
+    except Exception as e:
+        logger.error(f"Color rescaling failed: {e}")
+        raise
+
+
 if __name__ == "__main__":
-    logger.info("Starting vegetation classification")
-    classify_vegetation_rule_based(input_file_path, output_file_path)
+    # logger.info("Starting vegetation classification")
+    # classify_vegetation_rule_based(input_file_path, output_file_path)
+    input_file_path = Path("data/output_merged_backup.copc.laz")
+    output_file_path = Path("data/output_classified_rescaled.laz")
+    rescale_ahn_colors(input_file_path, output_file_path)
