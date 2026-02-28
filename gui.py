@@ -1,5 +1,6 @@
 import importlib
 import tkinter as tk
+
 from pyproj import Transformer
 
 tkintermapview = importlib.import_module("tkintermapview")
@@ -30,8 +31,8 @@ def make_map(title):
 
 
 def main():
+    from calculate import Point, Segment
     from query_copc import Polygon
-    from calculate import Segment, Point
     from utils import get_logger
 
     logger = get_logger(name="GUI Test")

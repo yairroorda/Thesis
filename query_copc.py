@@ -1,12 +1,14 @@
-import pdal
 import json
-from pathlib import Path
-import geopandas as gpd
-from shapely.geometry import Polygon as ShapelyPolygon
 import urllib.request
+from pathlib import Path
 from urllib.parse import urlparse
-from utils import timed, get_logger
-from gui import make_map, _TO_RD
+
+import geopandas as gpd
+import pdal
+from shapely.geometry import Polygon as ShapelyPolygon
+
+from gui import _TO_RD, make_map
+from utils import get_logger, timed
 
 logger = get_logger(name="Query")
 

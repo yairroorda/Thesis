@@ -1,8 +1,9 @@
-import pdal
 import json
-
 from pathlib import Path
-from utils import timed, get_logger
+
+import pdal
+
+from utils import get_logger, timed
 
 logger = get_logger(name="Classify")
 

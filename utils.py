@@ -1,7 +1,8 @@
 import logging
 import time
-import numpy as np
 from functools import wraps
+
+import numpy as np
 
 LOGGER_LEVEL = logging.DEBUG
 
