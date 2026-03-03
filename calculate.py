@@ -1,6 +1,7 @@
 import json
 import sys
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pdal
@@ -243,7 +244,7 @@ def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndar
 
     # calculate query radius knowing R_sphere = sqrt(r_cylinder² + (step²/4))
     query_radius = np.sqrt(radius**2 + (step**2 / 4))
-    candidate_lists = KDtree.query_ball_point(samples, r=query_radius, workers=1)  # workers=-1 causes to much overhead for small queries.
+    candidate_lists = KDtree.query_ball_point(samples, r=query_radius, workers=1)  # workers=-1 causes too much overhead for small queries.
 
     if len(candidate_lists) == 0:
         return np.array([], dtype=np.int64)
@@ -263,7 +264,7 @@ def get_PDAL_bounds_for_runs(point_pairs: list[Segment], radius: float) -> str:
     return f"([{minx},{maxx}],[{miny},{maxy}],[{minz},{maxz}])"
 
 
-def write_to_copc(points_in_cylindar: np.ndarray, output_path: Path):
+def write_to_copc(points_in_cylinder: np.ndarray, output_path: Path):
     write_pipeline = {
         "pipeline": [
             {
@@ -275,9 +276,9 @@ def write_to_copc(points_in_cylindar: np.ndarray, output_path: Path):
         ]
     }
 
-    writer = pdal.Pipeline(json.dumps(write_pipeline), arrays=[points_in_cylindar])
+    writer = pdal.Pipeline(json.dumps(write_pipeline), arrays=[points_in_cylinder])
     writer.execute()
-    logger.info(f"Wrote {points_in_cylindar.size} points to {output_path}")
+    logger.info(f"Wrote {points_in_cylinder.size} points to {output_path}")
 
 
 @timed("Loading points for runs")
@@ -330,7 +331,7 @@ def calculate_intervisibility(
     array_coords: np.ndarray,
     KDtree: cKDTree,
     chunk_size: float = DEFAULT_CHUNK_SIZE,
-    distance_mask_function: callable = get_distance_mask,
+    distance_mask_function: Callable = get_distance_mask,
 ) -> float:
     """
     Walk the line of sight from source to target in steps and compute a
@@ -458,7 +459,7 @@ def calculate_viewshed_for_grid(
     cylinder_radius: float,
     input_path: Path = DEFAULT_INPUT,
     output_path: Path = DEFAULT_OUTPUT,
-    intervisibility_func: callable = calculate_intervisibility,
+    intervisibility_func: Callable = calculate_intervisibility,
     chunk_size: float = DEFAULT_CHUNK_SIZE,
 ) -> None:
     """
@@ -505,7 +506,7 @@ def calculate_viewshed(
     input_path: Path = DEFAULT_INPUT,
     output_path: Path = DEFAULT_OUTPUT,
     thinning_factor: int = 1,
-    intervisibility_func: callable = calculate_intervisibility,
+    intervisibility_func: Callable = calculate_intervisibility,
     chunk_size: float = DEFAULT_CHUNK_SIZE,
 ) -> None:
     """
