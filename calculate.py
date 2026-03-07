@@ -5,10 +5,12 @@ from typing import Callable
 
 import numpy as np
 import pdal
+import rasterio
 from nlmod.read import ahn
+from rasterio.transform import from_origin
 from scipy.spatial import cKDTree
-from shapely.geometry import Point as ShapelyPoint
-from shapely.prepared import prep
+from shapely import contains
+from shapely import points as shapely_points
 from tqdm import tqdm
 
 from gui import _TO_RD, make_map
@@ -17,7 +19,7 @@ from utils import compare, get_logger, timed
 
 logger = get_logger(name="Calculate")
 
-DEFAULT_INPUT = Path(r"data/output_classified.copc.laz")
+DEFAULT_INPUT = Path(r"data/output_with_facades.copc.laz")
 DEFAULT_OUTPUT = Path(r"data/output_viewshed.copc.laz")
 
 WRITE_TO_FILE = True  # Control whether to write query outputs to a file.
@@ -156,33 +158,68 @@ class Cylinder:
         self.radius = radius
 
 
-def generate_grid(Area: Polygon, resolution: int, z_height: float = 0.0) -> list[Point]:
+def download_dtm_raster(aoi: Polygon, buffer: float = 2.0) -> ahn.AhnRaster:
+    """
+    Download the AHN DTM raster for a given polygon area.
+    """
+    logger = get_logger("Utils")
+    min_x, min_y, max_x, max_y = aoi.bounds
+    buffered_extent = [
+        min_x - buffer,
+        max_x + buffer,
+        min_y - buffer,
+        max_y + buffer,
+    ]
+    logger.debug(f"Downloading AHN DTM for extent {buffered_extent}")
+    try:
+        return ahn.download_latest_ahn_from_wcs(buffered_extent, identifier="dtm_05m")
+    except Exception as e:
+        raise RuntimeError(f"Failed to download AHN DTM: {e}")
+
+
+def sample_dtm(dtm_raster, points: list[Point]) -> np.ndarray:
+    """
+    Sample ground elevations from a DTM raster at the given (x, y) coordinates.
+    """
+    mean_val = float(dtm_raster.mean(skipna=True).values)
+    ground = np.full(len(points), mean_val, dtype=np.float64)
+
+    for i, point in enumerate(points):
+        try:
+            val = float(dtm_raster.sel(x=point.x, y=point.y, method="nearest").values)
+        except Exception:
+            val = np.nan
+
+        if np.isnan(val):
+            # fill with previous valid value (or mean if first)
+            ground[i] = ground[i - 1] if i > 0 else mean_val
+        else:
+            ground[i] = val
+
+    return ground
+
+
+def generate_grid(Area: Polygon, resolution: int, z_height: float = 0.0, two_d: bool = False) -> list[Point]:
+    """Generate a grid of points within the given area polygon, with the specified resolution and optional Z height."""
     min_x, min_y, max_x, max_y = Area.bounds
 
-    # Create the 2D base
     x_coords = np.arange(min_x, max_x, resolution)
     y_coords = np.arange(min_y, max_y, resolution)
-    xv, yv = np.meshgrid(x_coords, y_coords)
-    points_2d = np.stack([xv.ravel(), yv.ravel()], axis=-1)
-
-    # Create the Z layers
-    if z_height > 0:
-        z_coords = np.arange(0, z_height, resolution)
+    if two_d or z_height <= 0:
+        z_coords = np.array([float(z_height)], dtype=np.float64)
     else:
-        z_coords = [0.0]
+        z_coords = np.arange(0, z_height, resolution)
 
-    # Bake polygon for speed
-    prepared_area = prep(Area)
+    # Create full 3D meshgrid in one go
+    xv, yv, zv = np.meshgrid(x_coords, y_coords, z_coords, indexing="xy")
+    all_points = np.stack([xv.ravel(), yv.ravel(), zv.ravel()], axis=-1)
 
-    final_points = []
+    # Vectorized polygon containment check (Shapely >= 2.0)
+    geom_points = shapely_points(all_points[:, :2])
+    mask = contains(Area, geom_points)
 
-    # Filter and Generate 3D points
-    for x, y in points_2d:
-        if prepared_area.contains(ShapelyPoint(x, y)):
-            for z in z_coords:
-                final_points.append(Point(x, y, float(z)))
-
-    return final_points
+    filtered = all_points[mask]
+    return [Point(x, y, z) for x, y, z in filtered]
 
 
 def export_grid_to_copc(grid_points: list[Point], output_path: Path):
@@ -497,6 +534,8 @@ def calculate_viewshed_for_grid(
     if WRITE_TO_FILE:
         write_to_copc(out_array, output_path)
 
+    return visibility_values
+
 
 @timed("Viewshed calculation")
 def calculate_viewshed(
@@ -575,48 +614,15 @@ def calculate_viewshed(
         write_to_copc(out_array, output_path)
 
 
-def _get_ground_elevations(points: list["Point"], buffer: float = 2.0) -> list[float]:
-
-    xs = [p.x for p in points]
-    ys = [p.y for p in points]
-
-    extent = [float(min(xs)) - buffer, float(max(xs)) + buffer, float(min(ys)) - buffer, float(max(ys)) + buffer]
-
-    logger.debug(f"Downloading AHN DTM for extent {extent}")
-
-    # Download AHN DTM tile for the given extent
-    try:
-        ahn_raster = ahn.download_latest_ahn_from_wcs(extent, identifier="dtm_05m")
-    except Exception as e:
-        raise RuntimeError(f"Failed to download AHN tile: {e}")
-
-    # Initialize last valid ground level to the mean of the raster
-    last_valid_ground = float(ahn_raster.mean(skipna=True).values)
-
-    # Extract elevations
-    ground_levels = []
-    for point in points:
-        try:
-            ground_level = float(ahn_raster.sel(x=point.x, y=point.y, method="nearest").values)
-        except Exception:
-            ground_level = np.nan
-
-        # Fill gaps with last valid ground level
-        if np.isnan(ground_level):
-            ground_level = last_valid_ground
-        else:
-            last_valid_ground = ground_level
-
-        ground_levels.append(ground_level)
-
-    return ground_levels
-
-
 def hag_to_nap(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
     """
     Converts a list of points from Height Above Ground (HAG) to NAP.
     """
-    ground_levels = _get_ground_elevations(points, buffer)
+    xs = np.array([p.x for p in points])
+    ys = np.array([p.y for p in points])
+    aoi = Polygon.from_bounds(xs.min(), ys.min(), xs.max(), ys.max())
+    dtm = download_dtm_raster(aoi=aoi, buffer=buffer)
+    ground_levels = sample_dtm(dtm, points).tolist()
     translated_points = []
 
     for point, ground in zip(points, ground_levels):
@@ -631,7 +637,11 @@ def nap_to_hag(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
     """
     Converts a list of points from NAP to Height Above Ground (HAG).
     """
-    ground_levels = _get_ground_elevations(points, buffer)
+    xs = np.array([p.x for p in points])
+    ys = np.array([p.y for p in points])
+    aoi = Polygon.from_bounds(xs.min(), ys.min(), xs.max(), ys.max())
+    dtm = download_dtm_raster(aoi=aoi, buffer=buffer)
+    ground_levels = sample_dtm(dtm, points).tolist()
     translated_points = []
 
     for point, ground in zip(points, ground_levels):
@@ -640,6 +650,94 @@ def nap_to_hag(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
         translated_points.append(Point(point.x, point.y, z_hag))
 
     return translated_points
+
+
+def save_viewshed_as_tif(points: list[Point], visibility_values: np.ndarray, aoi: Polygon, resolution: float, output_path: Path) -> None:
+    """
+    Saves the viewshed points to a GeoTIFF, where each cell center corresponds to a grid point.
+    """
+    min_x, min_y, max_x, max_y = aoi.bounds
+
+    # Calculate raster dimensions
+    width = int(np.ceil((max_x - min_x) / resolution))
+    height = int(np.ceil((max_y - min_y) / resolution))
+
+    # Initialize the raster array with -1
+    raster_data = np.full((height, width), -1.0, dtype=np.float32)
+
+    # Map points to raster grid
+    for pt, vis in zip(points, visibility_values):
+        col = int(np.round((pt.x - min_x) / resolution))
+        row = int(np.round((max_y - pt.y) / resolution))
+
+        if 0 <= row < height and 0 <= col < width:
+            raster_data[row, col] = vis
+
+    # Shift the origin by half a cell so point are centered per pixel.
+    transform = from_origin(min_x - (resolution / 2.0), max_y + (resolution / 2.0), resolution, resolution)
+
+    with rasterio.open(
+        output_path,
+        "w",
+        driver="GTiff",
+        height=height,
+        width=width,
+        count=1,
+        dtype=raster_data.dtype,
+        crs="EPSG:28992",  # Standard Dutch CRS (Amersfoort / RD New)
+        transform=transform,
+        nodata=-1.0,
+    ) as dst:
+        dst.write(raster_data, 1)
+
+    logger.info(f"Saved 2D viewshed GeoTIFF to {output_path}")
+
+
+def calculate_viewshed_2d(
+    target: Point,
+    aoi: Polygon,
+    resolution: float = 1.0,
+    input_path: Path = DEFAULT_INPUT,
+    output_path: Path = DEFAULT_OUTPUT,
+    z_offset: float = 0.0,
+    radius: float = 0.15,
+) -> None:
+    # Generate a 2D grid of points along the ground within the AOI
+    grid_points = generate_grid(aoi, resolution, z_height=z_offset, two_d=True)
+    grid_points_nap = hag_to_nap(grid_points)
+    export_grid_to_copc(grid_points_nap, output_path=Path("data/grid_points_2d.copc.laz"))
+
+    # For each point, calculate the visibility from the target to that point
+    visibility_values = calculate_viewshed_for_grid(
+        target=target,
+        grid_points=grid_points_nap,
+        cylinder_radius=radius,
+        input_path=input_path,
+        output_path=output_path.with_suffix(".copc.laz"),
+        intervisibility_func=calculate_intervisibility,
+        chunk_size=DEFAULT_CHUNK_SIZE,
+    )
+
+    save_viewshed_as_tif(grid_points_nap, visibility_values, aoi, resolution, output_path.with_suffix(".tif"))
+
+
+def demo_viewshed_2d():
+    target_NAP = Point(233851.5, 581986.8, 1.7)
+    target = hag_to_nap([target_NAP])[0]
+    export_grid_to_copc([target], output_path=Path("data/target_point.copc.laz"))
+    area = Polygon.get_from_user("Select area for 2D viewshed calculation")
+    resolution = 1.0
+    radius = 0.15
+    output_path = Path("data/viewshed_2d_output")
+    calculate_viewshed_2d(
+        target=target,
+        aoi=area,
+        radius=radius,
+        resolution=resolution,
+        input_path=DEFAULT_INPUT,
+        output_path=output_path,
+        z_offset=0.3,
+    )
 
 
 def demo_viewshed_from_grid():
@@ -686,7 +784,7 @@ def demo_point_to_point():
     logger.info(f"Calculated visibility: {visibility:.4f}")
 
 
-def dem_hag_grid():
+def demo_hag_grid():
     area = Polygon.get_from_user("Select area for HAG grid generation")
     grid_points = generate_grid(area, resolution=1.0, z_height=0.0)
 
@@ -703,4 +801,4 @@ if __name__ == "__main__":
     # demo_point_to_point()
     # demo_viewshed_from_cloud()
     # demo_viewshed_from_grid()
-    dem_hag_grid()
+    demo_hag_grid()
