@@ -14,20 +14,20 @@ logger = get_logger(name="Main")
 def main():
     # Query the relevant points
 
-    # polygon_path = Path("data/groningen_polygon.gpkg")
-    # query_copc(polygon_path=polygon_path)
+    polygon_path = Path("data/groningen_polygon.gpkg")
+    query_copc(polygon_path=polygon_path)
 
     aoi = Polygon.get_from_user("Select area of interest")
-    # query_copc(polygon=aoi)
+    query_copc(polygon=aoi)
 
-    # # Classify vegetation
-    # input_copc_path = Path("data/output_merged.copc.laz")
-    # output_classified_path = Path("data/output_classified.copc.laz")
-    # classify_vegetation(input_copc_path, output_classified_path)
+    # Classify vegetation
+    input_copc_path = Path("data/output_merged.copc.laz")
+    output_classified_path = Path("data/output_classified.copc.laz")
+    classify_vegetation(input_copc_path, output_classified_path)
 
     # Generate building facades from roof edges
     output_facades_path = Path("data/classified_with_facades.copc.laz")
-    # generate_facades(output_classified_path, output_facades_path)
+    generate_facades(output_classified_path, output_facades_path)
 
     # Generate 2D viewshed
     target = Point.get_from_user("Select target point for viewshed calculation")
