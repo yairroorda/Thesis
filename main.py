@@ -2,8 +2,7 @@ from pathlib import Path
 
 from calculate import Point, Segment, calculate_point_to_point, calculate_viewshed_2d, export_grid_to_copc, hag_to_nap
 from enhance_facades import generate_facades
-from query_copc import Polygon
-from query_copc import query_ahn_2d as query_copc
+from query_copc import Polygon, get_pointcloud_aoi
 from segment import classify_vegetation_rule_based as classify_vegetation
 from utils import get_logger, timed
 
@@ -13,27 +12,36 @@ logger = get_logger(name="Main")
 @timed("Total processing")
 def main():
     # Query the relevant points
-
-    polygon_path = Path("data/groningen_polygon.gpkg")
-    query_copc(polygon_path=polygon_path)
-
-    aoi = Polygon.get_from_user("Select area of interest")
-    query_copc(polygon=aoi)
+    # aoi = Polygon.get_from_user("Select area of interest")
+    aoi = Polygon(
+        [
+            (233691.30497727558, 581987.2869825428),
+            (233875.81124650215, 582056.8082196123),
+            (233921.904485486, 581956.0270049961),
+            (233758.77601513162, 581894.0032933606),
+            (233691.30497727558, 581987.2869825428),
+        ]
+    )
+    output_copc_path = Path("data/groningen_plein_AHN4.copc.laz")
+    dataset = "AHN4"
+    get_pointcloud_aoi(aoi, include=[dataset], output_path=output_copc_path)
 
     # Classify vegetation
-    input_copc_path = Path("data/output_merged.copc.laz")
-    output_classified_path = Path("data/output_classified.copc.laz")
-    classify_vegetation(input_copc_path, output_classified_path)
+    output_classified_path = Path("data/groningen_plein_AHN4_classified.copc.laz")
+    classify_vegetation(output_copc_path, output_classified_path)
 
     # Generate building facades from roof edges
-    output_facades_path = Path("data/classified_with_facades.copc.laz")
+    output_facades_path = Path("data/groningen_plein_AHN4_facades.copc.laz")
     generate_facades(output_classified_path, output_facades_path)
 
     # Generate 2D viewshed
-    target = Point.get_from_user("Select target point for viewshed calculation")
+    target_NAP = Point(233851.5, 581986.8, 1.7)
+    target = hag_to_nap([target_NAP])[0]
+    export_grid_to_copc([target], output_path=Path("data/target_point.copc.laz"))
     resolution = 1.0
-    radius = 0.5
-    output_path = Path("data/viewshed_2d_output")
+    radius = 0.15
+    output_path = Path("data/groningen_plein_AHN4_viewshed")
+
     calculate_viewshed_2d(
         target=target,
         aoi=aoi,
