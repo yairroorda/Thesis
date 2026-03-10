@@ -1,7 +1,7 @@
 import json
 import urllib.request
+import zipfile
 from pathlib import Path
-from urllib.parse import urlparse
 
 import geopandas as gpd
 import pdal
@@ -11,6 +11,32 @@ from gui import _TO_RD, make_map
 from utils import get_logger, timed
 
 logger = get_logger(name="Query")
+
+DATA_DIR = Path("data")
+DEFAULT_OUTPUT_PATH = DATA_DIR / "output_merged_BK.copc.laz"
+
+
+_DATASETS = [
+    {
+        "name": "AHN6",
+        "file_type": "COPC",
+        "index_url": "https://basisdata.nl/hwh-ahn/AUX/bladwijzer_AHN6.gpkg",
+        "index_cache_name": "index_waterschapshuis",
+        "layer": "bladindeling",
+        "base_url": "https://fsn1.your-objectstorage.com/hwh-ahn/AHN6/01_LAZ/",
+    },
+] + [
+    {
+        "name": f"AHN{v}",
+        "file_type": "LAS",
+        "index_url": "https://static.fwrite.org/2022/01/index_sheets.gpkg_.zip",
+        "index_cache_name": "index_geotiles",
+        "layer": "AHN_subunits",
+        "tile_col": "GT_AHNSUB",
+        "base_url": f"https://geotiles.citg.tudelft.nl/AHN{v}_T",
+    }
+    for v in range(5, 0, -1)
+]
 
 
 class Polygon(ShapelyPolygon):
@@ -59,110 +85,104 @@ class Polygon(ShapelyPolygon):
         return cls([_TO_RD.transform(lon, lat) for lat, lon in points_latlon])
 
 
-# 0. setup - ensure output directory exists
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
-
-# 1. Define arbitrary WKT Polygon
-# The field of autzen stadium
-# wkt_string_autzen = "POLYGON((637185.1 851912.5, 637239.4 852087.0, 637575.3 851980.0, 637526.4 851806.0, 637185.1 851912.5))"
-# wkt_string_AHN6 = "POLYGON((234305 582712, 234759 582712, 234759 582300, 234305 582300, 234305 582712))"
-
-
-# 2. Path to COPC file (remote URL or local path)
-# remote_url_autzen = "https://github.com/PDAL/data/raw/refs/heads/main/autzen/autzen-classified.copc.laz?download="
-# local_file_AHN6 = r"C:\Users\yairr\Downloads\test\hwh-ahn\AHN6\01_LAZ\AHN6_2025_C_233000_582000.COPC.LAZ"
-# remote_url_AHN6 = "https://fsn1.your-objectstorage.com/hwh-ahn/AHN6/01_LAZ/AHN6_2025_C_233000_582000.COPC.LAZ"
-
-
-def download_ahn_index(index_url, target_dir: Path = DATA_DIR):
-    """
-    Downloads an index file from index_url if it doesn't already exist.
-    """
-    Path(target_dir).mkdir(parents=True, exist_ok=True)
-    filename = Path(urlparse(index_url).path).name
-    local_path = Path(target_dir) / filename
-
-    if local_path.exists():
-        logger.info(f"Using existing local index: {local_path}")
-    else:
-        logger.info(f"Downloading AHN index from {index_url}...")
-        try:
-            # Set User-Agent to mimic a browser and bypass 403 restrictions
-            opener = urllib.request.build_opener()
-            opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")]
-            urllib.request.install_opener(opener)
-
+def _download_index(cache_name: str, index_url: str) -> Path:
+    local_path = DATA_DIR / f"{cache_name}.gpkg"
+    if not local_path.exists():
+        logger.info(f"Downloading {cache_name} index ...")
+        if index_url.endswith(".zip"):
+            tmp_zip = DATA_DIR / "tmp_index.zip"
+            urllib.request.urlretrieve(index_url, tmp_zip)
+            with zipfile.ZipFile(tmp_zip) as zf:
+                gpkg_name = next(n for n in zf.namelist() if n.endswith(".gpkg"))
+                local_path.write_bytes(zf.read(gpkg_name))
+            tmp_zip.unlink()
+        else:
             urllib.request.urlretrieve(index_url, local_path)
-            logger.info(f"Download complete: {local_path}")
-        except Exception as e:
-            logger.error(f"Failed to download index: {e}")
-            raise
-
     return local_path
 
 
-def query_tiles_2d(tile_urls, wkt_polygon):
-    # Create a reader for every tile URL
-    pipeline_def = [{"type": "readers.copc", "filename": url, "requests": 16} for url in tile_urls]
+def _find_tiles(gdf_polygon: gpd.GeoDataFrame, dataset: dict) -> list[str]:
+    index_gdf = gpd.read_file(_download_index(dataset["index_cache_name"], dataset["index_url"]), layer=dataset["layer"])
+    hits = gpd.sjoin(index_gdf, gdf_polygon[["geometry"]], how="inner", predicate="intersects")
 
-    # Add Merge, Crop, and Writer to the list
-    pipeline_def.extend([{"type": "filters.merge"}, {"type": "filters.crop", "polygon": wkt_polygon}, {"type": "writers.copc", "filename": str(DATA_DIR / "output_merged.copc.laz"), "forward": "all"}])
-
-    try:
-        pipeline = pdal.Pipeline(json.dumps(pipeline_def))
-        count = pipeline.execute()
-        logger.info(f"Successfully processed {count} points from {len(tile_urls)} tiles.")
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-
-
-def find_tiles(gdf_polygon):
-    """Find the relevant AHN6 tiles for a given polygon."""
-    # Load AHN6 tile index
-    index_url = "https://basisdata.nl/hwh-ahn/AUX/bladwijzer_AHN6.gpkg"
-    local_index_path = download_ahn_index(index_url)
-    index_gdf = gpd.read_file(local_index_path, layer="bladindeling")
-
-    # Spatial join to find intersecting tiles
-    intersecting_tiles = gpd.sjoin(index_gdf, gdf_polygon, how="inner", predicate="intersects")
-
-    tile_urls = []
-    # Base URL for AHN6 streaming
-    base_url = "https://fsn1.your-objectstorage.com/hwh-ahn/AHN6/01_LAZ/"
-
-    # Construct URLs using the 'left' and 'bottom' columns
-    for _, row in intersecting_tiles.iterrows():
-        # Using 'left' as X and 'bottom' as Y
-        # We ensure they are strings with the leading zeros if necessary
-        x = str(int(row["left"])).zfill(6)
-        y = str(int(row["bottom"])).zfill(6)
-
-        # Build the official AHN6 filename pattern
-        # Note: 2025 is the standard AHN6 year, but may vary by tile
-        filename = f"AHN6_2025_C_{x}_{y}.COPC.LAZ"
-        tile_urls.append(base_url + filename)
-
-    return tile_urls
-
-
-@timed("COPC query")
-def query_ahn_2d(polygon: Polygon | None = None, polygon_path: Path | None = None):
-    if polygon is not None:
-        gdf = gpd.GeoDataFrame(geometry=[polygon], crs="EPSG:28992")
+    if "tile_col" in dataset:
+        # AHN1-5: tile name comes directly from an index column
+        return [f"{dataset['base_url']}/{tile}.LAZ" for tile in dict.fromkeys(hits[dataset["tile_col"]])]
     else:
-        gdf = gpd.read_file(str(polygon_path))
+        # AHN6: build tile URL from x/y bounding box coordinates
+        urls = []
+        for _, row in hits.iterrows():
+            x = str(int(row["left"])).zfill(6)
+            y = str(int(row["bottom"])).zfill(6)
+            urls.append(f"{dataset['base_url']}AHN6_2025_C_{x}_{y}.COPC.LAZ")
+        return list(dict.fromkeys(urls))
 
-    wkt_polygon_AHN6 = gdf.geometry.iloc[0].wkt  # type:ignore
 
-    remote_url_AHN6 = find_tiles(gdf)
+def _execute_pdal(tile_urls: list[str], wkt_polygon: str, file_type: str, output_path: Path) -> Path:
+    reader_type = "readers.copc" if file_type == "COPC" else "readers.las"
+    readers = []
+    for url in tile_urls:
+        reader = {"type": reader_type, "filename": url}
+        if file_type == "COPC":
+            reader["requests"] = 16
+        readers.append(reader)
+    pipeline = readers + [
+        {"type": "filters.merge"},
+        {"type": "filters.crop", "polygon": wkt_polygon},
+        {"type": "writers.copc", "filename": str(output_path), "forward": "all"},
+    ]
+    count = pdal.Pipeline(json.dumps(pipeline)).execute()
+    logger.info(f"Processed {count} points from {len(tile_urls)} tiles into {output_path}.")
+    return output_path
 
-    query_tiles_2d(tile_urls=remote_url_AHN6, wkt_polygon=wkt_polygon_AHN6)
+
+@timed("Pointcloud query")
+def get_pointcloud_aoi(aoi: ShapelyPolygon, output_path: Path = DEFAULT_OUTPUT_PATH, include: list[str] | None = None) -> Path:
+    """Download AHN point cloud for the given area and save to output_path.
+
+    Parameters:
+        aoi (Polygon): Area of interest as a Shapely Polygon in RD coordinates.
+        output_path (Path): Where to save the resulting point cloud file.
+        include (list[str] | None): Optional list of dataset names to include (e.g. ["AHN6", "AHN5"]). If None, defaults to the newest dataset.
+
+    Returns:
+        Path: The path to the saved point cloud file.
+
+    """
+    datasets = [d for d in _DATASETS if include is None or d["name"] in include]
+    gdf = gpd.GeoDataFrame(geometry=[aoi], crs="EPSG:28992")
+
+    for dataset in datasets:
+        try:
+            tile_urls = _find_tiles(gdf, dataset)
+            if not tile_urls:
+                logger.warning(f"Dataset {dataset['name']} returned no intersecting tiles.")
+                continue
+            logger.info(f"Using {dataset['name']}, found {len(tile_urls)} intersecting tiles.")
+            return _execute_pdal(tile_urls, aoi.wkt, dataset["file_type"], output_path)
+        except Exception as exc:
+            logger.warning(f"Dataset {dataset['name']} failed: {exc}")
+            if output_path.exists():
+                output_path.unlink()
+
+    raise RuntimeError("Could not query AHN data.")
 
 
 if __name__ == "__main__":
-    # polygon_path = Path("data/groningen_polygon.gpkg")
-    # query_ahn_2d(polygon_path=polygon_path)
+    # aoi = Polygon.get_from_user("Select polygon AOI for AHN query")
+    datasets = ["AHN6", "AHN5", "AHN4", "AHN3", "AHN2", "AHN1"]
+    aoi = Polygon(
+        [
+            (233691.30497727558, 581987.2869825428),
+            (233875.81124650215, 582056.8082196123),
+            (233921.904485486, 581956.0270049961),
+            (233758.77601513162, 581894.0032933606),
+            (233691.30497727558, 581987.2869825428),
+        ]
+    )
 
-    aoi = Polygon.get_from_user("Select polygon AOI for AHN query")
-    query_ahn_2d(polygon=aoi)
+    for dataset in datasets:
+        try:
+            get_pointcloud_aoi(aoi, include=[dataset], output_path=DATA_DIR / f"groningen_plein_{dataset}.copc.laz")
+        except RuntimeError as exc:
+            logger.warning(f"Skipping {dataset}: {exc}")
