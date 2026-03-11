@@ -378,7 +378,7 @@ def calculate_intervisibility(
     KDtree: cKDTree,
     chunk_size: float = DEFAULT_CHUNK_SIZE,
     distance_mask_function: Callable = get_distance_mask,
-) -> float:
+) -> tuple[float, np.ndarray]:
     """
     Walk the line of sight from source to target in steps and compute a
     visibility value between 0 and 1.
@@ -404,8 +404,13 @@ def calculate_intervisibility(
     steps_per_chunk = max(1, int(np.round(chunk_size / step_length)))
     query_radius = np.sqrt(radius**2 + (step_length**2 / 4))
 
+    # Pre-compute midpoint positions for each step along the ray
+    t_mids = (np.arange(num_steps) + 0.5) / num_steps
+    all_step_positions = segment.point1.array_coords + t_mids[:, None] * segment.vector
+
     # Walk the LoS
     visibility = 1.0
+    step_vis = np.zeros(num_steps, dtype=np.float64)
 
     # Iterate through the LoS in chunks
     for start_step in range(0, num_steps, steps_per_chunk):
@@ -421,6 +426,7 @@ def calculate_intervisibility(
         # Filter out empty lists and flatten unique indices
         valid_candidates = [c for c in candidate_lists if c]
         if not valid_candidates:
+            step_vis[start_step:end_step] = visibility
             continue
 
         flat_indices = np.unique(np.concatenate([np.asarray(c, dtype=np.int64) for c in valid_candidates]))
@@ -431,6 +437,7 @@ def calculate_intervisibility(
         filtered_indices = flat_indices[distance_mask]
 
         if filtered_indices.size == 0:
+            step_vis[start_step:end_step] = visibility
             continue
 
         filtered_points = array_points[filtered_indices]
@@ -461,14 +468,16 @@ def calculate_intervisibility(
             terrain_density = terrain_count / cross_section_area
 
             if terrain_density >= TERRAIN_DENSITY_THRESHOLD:
-                return 0.0
+                los_data = np.column_stack([all_step_positions, step_vis])
+                return 0.0, los_data
 
             # Check threshold for buildings
             building_count = int(np.count_nonzero(in_bin & building_mask))
             building_density = building_count / cross_section_area
 
             if building_density >= BUILDING_DENSITY_THRESHOLD:
-                return 0.0
+                los_data = np.column_stack([all_step_positions, step_vis])
+                return 0.0, los_data
 
             # Decrease visibility for vegetation
             vegetation_count = int(np.count_nonzero(in_bin & vegetation_mask))
@@ -479,9 +488,12 @@ def calculate_intervisibility(
                 attenuation = np.exp(-BEER_LAMBERT_COEFFICIENT * vegetation_density * actual_step)
                 visibility *= attenuation
 
+            step_vis[current_global_step] = visibility
+
     visibility = float(np.clip(visibility, 0.0, 1.0))
     # logger.info(f"Final visibility: {visibility:.4f}")
-    return visibility
+    los_data = np.column_stack([all_step_positions, step_vis])
+    return visibility, los_data
 
 
 def calculate_point_to_point(point_pair: Segment, radius: float) -> float:
@@ -490,7 +502,7 @@ def calculate_point_to_point(point_pair: Segment, radius: float) -> float:
         logger.warning("No points loaded for the requested point pair.")
         return 1.0  # Assume full visibility if no points are loaded
     cylinder_of_sight = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
-    visibility = calculate_intervisibility(
+    visibility, _ = calculate_intervisibility(
         cylinder_of_sight,
         array_points,
         array_coords,
@@ -523,22 +535,35 @@ def calculate_viewshed_for_grid(
     logger.info(f"Computing visibility for {len(grid_points)} grid points.")
 
     visibility_values = np.zeros(len(grid_points), dtype=np.float64)
+    all_los_chunks: list[np.ndarray] = []
 
     for i, dest in enumerate(tqdm(grid_points, desc="Grid Viewshed", unit="pts")):
         segment = Segment(target, dest)
         cylinder = Cylinder(segment, cylinder_radius)
 
-        # Calculate visibility
-        visibility_values[i] = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
+        # Calculate visibility and collect per-step LoS data
+        visibility_values[i], los_data = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
+        all_los_chunks.append(los_data)
 
     # Build output array
     dtype = [("X", "<f8"), ("Y", "<f8"), ("Z", "<f8"), ("Visibility", "<f8")]
-    out_array = np.empty(len(grid_points), dtype=dtype)
+    out_grid = np.empty(len(grid_points), dtype=dtype)
 
-    out_array["X"] = grid_coords[:, 0]
-    out_array["Y"] = grid_coords[:, 1]
-    out_array["Z"] = grid_coords[:, 2]
-    out_array["Visibility"] = visibility_values
+    out_grid["X"] = grid_coords[:, 0]
+    out_grid["Y"] = grid_coords[:, 1]
+    out_grid["Z"] = grid_coords[:, 2]
+    out_grid["Visibility"] = visibility_values
+
+    if all_los_chunks:
+        all_los_arr = np.vstack(all_los_chunks)
+        out_los = np.empty(len(all_los_arr), dtype=dtype)
+        out_los["X"] = all_los_arr[:, 0]
+        out_los["Y"] = all_los_arr[:, 1]
+        out_los["Z"] = all_los_arr[:, 2]
+        out_los["Visibility"] = all_los_arr[:, 3]
+        out_array = np.concatenate([out_grid, out_los])
+    else:
+        out_array = out_grid
 
     if WRITE_TO_FILE:
         write_to_copc(out_array, output_path)
@@ -605,7 +630,7 @@ def calculate_viewshed(
 
         segment = Segment(target, dest)
         cylinder = Cylinder(segment, cylinder_radius)
-        visibility_values[i] = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
+        visibility_values[i], _ = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
 
     # Build output array with Visibility dimension (only thinned points)
     thinned_points = array_points[thinned_sphere_indices]
@@ -711,10 +736,10 @@ def calculate_viewshed_2d(
     z_offset: float = 0.0,
     radius: float = 0.15,
 ) -> None:
-    # Generate a 2D grid of points along the ground within the AOI
-    grid_points = generate_grid(aoi, resolution, z_height=z_offset, two_d=True)
-    grid_points_nap = hag_to_nap(grid_points)
-    export_grid_to_copc(grid_points_nap, output_path=Path("data/grid_points_2d.copc.laz"))
+    # Sample points along the AOI boundary at the given resolution
+    boundary_points = sample_polygon_boundary(aoi, sample_distance=resolution, z_height=z_offset)
+    grid_points_nap = hag_to_nap(boundary_points)
+    # export_grid_to_copc(grid_points_nap, output_path=Path("data/grid_points_2d_edges.copc.laz"))
 
     # For each point, calculate the visibility from the target to that point
     visibility_values = calculate_viewshed_for_grid(
