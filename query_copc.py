@@ -118,7 +118,7 @@ def _find_tiles(gdf_polygon: gpd.GeoDataFrame, dataset: dict) -> list[str]:
         return list(dict.fromkeys(urls))
 
 
-def _execute_pdal(tile_urls: list[str], wkt_polygon: str, file_type: str, output_path: Path) -> Path:
+def _execute_pdal(tile_urls: list[str], aoi: Polygon, file_type: str, output_path: Path) -> Path:
     reader_type = "readers.copc" if file_type == "COPC" else "readers.las"
     readers = []
     for url in tile_urls:
@@ -128,7 +128,7 @@ def _execute_pdal(tile_urls: list[str], wkt_polygon: str, file_type: str, output
         readers.append(reader)
     pipeline = readers + [
         {"type": "filters.merge"},
-        {"type": "filters.crop", "polygon": wkt_polygon},
+        {"type": "filters.crop", "polygon": aoi.wkt},
         {"type": "writers.copc", "filename": str(output_path), "forward": "all"},
     ]
     count = pdal.Pipeline(json.dumps(pipeline)).execute()
@@ -137,11 +137,11 @@ def _execute_pdal(tile_urls: list[str], wkt_polygon: str, file_type: str, output
 
 
 @timed("Pointcloud query")
-def get_pointcloud_aoi(aoi: ShapelyPolygon, output_path: Path = DEFAULT_OUTPUT_PATH, include: list[str] | None = None) -> Path:
+def get_pointcloud_aoi(aoi: Polygon, output_path: Path = DEFAULT_OUTPUT_PATH, include: list[str] | None = None) -> Path:
     """Download AHN point cloud for the given area and save to output_path.
 
     Parameters:
-        aoi (Polygon): Area of interest as a Shapely Polygon in RD coordinates.
+        aoi (Polygon): Area of interest as a Polygon in RD coordinates.
         output_path (Path): Where to save the resulting point cloud file.
         include (list[str] | None): Optional list of dataset names to include (e.g. ["AHN6", "AHN5"]). If None, defaults to the newest dataset.
 
@@ -159,7 +159,7 @@ def get_pointcloud_aoi(aoi: ShapelyPolygon, output_path: Path = DEFAULT_OUTPUT_P
                 logger.warning(f"Dataset {dataset['name']} returned no intersecting tiles.")
                 continue
             logger.info(f"Using {dataset['name']}, found {len(tile_urls)} intersecting tiles.")
-            return _execute_pdal(tile_urls, aoi.wkt, dataset["file_type"], output_path)
+            return _execute_pdal(tile_urls, aoi, dataset["file_type"], output_path)
         except Exception as exc:
             logger.warning(f"Dataset {dataset['name']} failed: {exc}")
             if output_path.exists():
