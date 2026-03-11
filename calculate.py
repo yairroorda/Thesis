@@ -19,8 +19,8 @@ from utils import compare, get_logger, timed
 
 logger = get_logger(name="Calculate")
 
-DEFAULT_INPUT = Path(r"data/output_with_facades.copc.laz")
-DEFAULT_OUTPUT = Path(r"data/output_viewshed.copc.laz")
+DEFAULT_INPUT = Path(r"data/groningen_plein_AHN4_facades.copc.laz")
+DEFAULT_OUTPUT = Path(r"data/output_viewshed_shell.copc.laz")
 
 WRITE_TO_FILE = True  # Control whether to write query outputs to a file.
 
@@ -220,6 +220,15 @@ def generate_grid(Area: Polygon, resolution: int, z_height: float = 0.0, two_d: 
 
     filtered = all_points[mask]
     return [Point(x, y, z) for x, y, z in filtered]
+
+
+def sample_polygon_boundary(polygon: Polygon, sample_distance: float, z_height: float = 0.0) -> list[Point]:
+    """Sample points at regular intervals along the exterior boundary of a polygon."""
+    boundary = polygon.exterior
+    total_length = boundary.length
+    num_samples = max(2, int(np.ceil(total_length / sample_distance)))
+    distances = np.linspace(0, total_length, num_samples, endpoint=False)
+    return [Point(boundary.interpolate(d).x, boundary.interpolate(d).y, z_height) for d in distances]
 
 
 def export_grid_to_copc(grid_points: list[Point], output_path: Path):
