@@ -725,13 +725,21 @@ def demo_viewshed_2d():
     target_NAP = Point(233851.5, 581986.8, 1.7)
     target = hag_to_nap([target_NAP])[0]
     export_grid_to_copc([target], output_path=Path("data/target_point.copc.laz"))
-    area = Polygon.get_from_user("Select area for 2D viewshed calculation")
+    aoi = Polygon(
+        [
+            (233691.30497727558, 581987.2869825428),
+            (233875.81124650215, 582056.8082196123),
+            (233921.904485486, 581956.0270049961),
+            (233758.77601513162, 581894.0032933606),
+            (233691.30497727558, 581987.2869825428),
+        ]
+    )
     resolution = 1.0
     radius = 0.15
     output_path = Path("data/viewshed_2d_output")
     calculate_viewshed_2d(
         target=target,
-        aoi=area,
+        aoi=aoi,
         radius=radius,
         resolution=resolution,
         input_path=DEFAULT_INPUT,
@@ -801,4 +809,5 @@ if __name__ == "__main__":
     # demo_point_to_point()
     # demo_viewshed_from_cloud()
     # demo_viewshed_from_grid()
-    demo_hag_grid()
+    # demo_hag_grid()
+    demo_viewshed_2d()
