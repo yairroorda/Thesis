@@ -5,9 +5,7 @@ from typing import Callable
 
 import numpy as np
 import pdal
-import rasterio
 from nlmod.read import ahn
-from rasterio.transform import from_origin
 from scipy.spatial import cKDTree
 from shapely import contains
 from shapely import points as shapely_points
@@ -15,7 +13,7 @@ from tqdm import tqdm
 
 from gui import _TO_RD, make_map
 from query_copc import Polygon
-from utils import compare, get_logger, timed
+from utils import get_logger, timed
 
 logger = get_logger(name="Calculate")
 
@@ -519,7 +517,7 @@ def calculate_viewshed_for_grid(
     output_path: Path = DEFAULT_OUTPUT,
     intervisibility_func: Callable = calculate_intervisibility,
     chunk_size: float = DEFAULT_CHUNK_SIZE,
-) -> None:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     For every point in the grid, compute visibility from target to that point
     and write the result as a new 'Visibility' dimension in a COPC file.
@@ -568,7 +566,7 @@ def calculate_viewshed_for_grid(
     if WRITE_TO_FILE:
         write_to_copc(out_array, output_path)
 
-    return visibility_values
+    return visibility_values, out_array
 
 
 @timed("Viewshed calculation")
@@ -686,47 +684,6 @@ def nap_to_hag(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
     return translated_points
 
 
-def save_viewshed_as_tif(points: list[Point], visibility_values: np.ndarray, aoi: Polygon, resolution: float, output_path: Path) -> None:
-    """
-    Saves the viewshed points to a GeoTIFF, where each cell center corresponds to a grid point.
-    """
-    min_x, min_y, max_x, max_y = aoi.bounds
-
-    # Calculate raster dimensions
-    width = int(np.ceil((max_x - min_x) / resolution))
-    height = int(np.ceil((max_y - min_y) / resolution))
-
-    # Initialize the raster array with -1
-    raster_data = np.full((height, width), -1.0, dtype=np.float32)
-
-    # Map points to raster grid
-    for pt, vis in zip(points, visibility_values):
-        col = int(np.round((pt.x - min_x) / resolution))
-        row = int(np.round((max_y - pt.y) / resolution))
-
-        if 0 <= row < height and 0 <= col < width:
-            raster_data[row, col] = vis
-
-    # Shift the origin by half a cell so point are centered per pixel.
-    transform = from_origin(min_x - (resolution / 2.0), max_y + (resolution / 2.0), resolution, resolution)
-
-    with rasterio.open(
-        output_path,
-        "w",
-        driver="GTiff",
-        height=height,
-        width=width,
-        count=1,
-        dtype=raster_data.dtype,
-        crs="EPSG:28992",  # Standard Dutch CRS (Amersfoort / RD New)
-        transform=transform,
-        nodata=-1.0,
-    ) as dst:
-        dst.write(raster_data, 1)
-
-    logger.info(f"Saved 2D viewshed GeoTIFF to {output_path}")
-
-
 def calculate_viewshed_2d(
     target: Point,
     aoi: Polygon,
@@ -735,14 +692,14 @@ def calculate_viewshed_2d(
     output_path: Path = DEFAULT_OUTPUT,
     z_offset: float = 0.0,
     radius: float = 0.15,
-) -> None:
+) -> tuple[list[Point], np.ndarray, np.ndarray]:
     # Sample points along the AOI boundary at the given resolution
     boundary_points = sample_polygon_boundary(aoi, sample_distance=resolution, z_height=z_offset)
     grid_points_nap = hag_to_nap(boundary_points)
     # export_grid_to_copc(grid_points_nap, output_path=Path("data/grid_points_2d_edges.copc.laz"))
 
     # For each point, calculate the visibility from the target to that point
-    visibility_values = calculate_viewshed_for_grid(
+    visibility_values, visibility_points = calculate_viewshed_for_grid(
         target=target,
         grid_points=grid_points_nap,
         cylinder_radius=radius,
@@ -752,7 +709,7 @@ def calculate_viewshed_2d(
         chunk_size=DEFAULT_CHUNK_SIZE,
     )
 
-    save_viewshed_as_tif(grid_points_nap, visibility_values, aoi, resolution, output_path.with_suffix(".tif"))
+    return grid_points_nap, visibility_values, visibility_points
 
 
 def demo_viewshed_2d():

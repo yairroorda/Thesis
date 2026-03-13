@@ -1,5 +1,24 @@
 # Geomatics Master Thesis
 
+## Project Structure
+
+```text
+.
+|-- src/
+|   |-- main.py
+|   |-- calculate.py
+|   |-- enhance_facades.py
+|   |-- gui.py
+|   |-- query_copc.py
+|   |-- segment.py
+|   |-- utils.py
+|   `-- visualize.py
+|-- data/
+|-- environment.yml            # Conda environment
+|-- README.md
+`-- .gitignore
+```
+
 ## Installation & Setup
 
 This project uses **Conda** to manage dependencies for handling complex geospatial libraries like PDAL and GeoPandas.
@@ -21,6 +40,14 @@ Then activate it by running:
 
 ```bash
 conda activate thesis_env
+```
+
+### How to run
+
+Run the project from `src` with:
+
+```bash
+python main.py
 ```
 
 ## Preview results

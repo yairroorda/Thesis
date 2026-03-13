@@ -22,7 +22,8 @@ from shapely.geometry import MultiPoint
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
-from calculate import Polygon, download_dtm_raster
+from calculate import download_dtm_raster
+from query_copc import Polygon
 from utils import get_logger, timed
 
 logger = get_logger(name="EnhanceFacades")
