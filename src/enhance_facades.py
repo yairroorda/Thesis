@@ -13,7 +13,6 @@ After classification (segment.py), this module:
 import json
 from pathlib import Path
 
-import geopandas as gpd
 import numpy as np
 import pdal
 from scipy.spatial import cKDTree
