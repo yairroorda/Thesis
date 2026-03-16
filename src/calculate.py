@@ -1,7 +1,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import numpy as np
 import pdal
@@ -32,6 +32,9 @@ BUILDING_DENSITY_THRESHOLD = 14
 VEGETATION_DENSITY_THRESHOLD = 1
 BEER_LAMBERT_COEFFICIENT = 0.05
 DEFAULT_CHUNK_SIZE = 3.0
+RADIUS_MODE_FIXED = "fixed"
+RADIUS_MODE_WIDENING_LINEAR = "widening_linear"
+RadiusMode = Literal["fixed", "widening_linear"]
 
 
 class Point:
@@ -151,9 +154,66 @@ class Segment:
 
 
 class Cylinder:
-    def __init__(self, segment: Segment, radius: float):
+    def __init__(
+        self,
+        segment: Segment,
+        radius: float | None = None,
+        *,
+        radius_mode: RadiusMode = RADIUS_MODE_FIXED,
+        min_radius: float | None = None,
+        max_radius: float | None = None,
+        step_length: float | None = None,
+    ):
         self.segment = segment
-        self.radius = radius
+        self.radius_mode = radius_mode
+
+        if radius_mode == RADIUS_MODE_FIXED:
+            self.min_radius = float(radius)
+            self.max_radius = float(radius)
+        elif radius_mode == RADIUS_MODE_WIDENING_LINEAR:
+            self.min_radius = float(min_radius)
+            self.max_radius = float(max_radius)
+        else:
+            raise ValueError(f"Unsupported radius mode: {radius_mode}")
+
+        # Backward-compatible alias used by older call sites and helpers.
+        self.radius = self.max_radius
+        default_step = self.min_radius
+        self.step_length = float(step_length) if step_length is not None else float(default_step)
+        if self.step_length <= 0:
+            raise ValueError("Step length must be greater than zero.")
+
+    def radius_at_t(self, t: np.ndarray | float) -> np.ndarray:
+        t_arr = np.asarray(t, dtype=np.float64)
+        t_clipped = np.clip(t_arr, 0.0, 1.0)
+
+        if self.radius_mode == RADIUS_MODE_FIXED:
+            return np.full_like(t_clipped, self.min_radius, dtype=np.float64)
+
+        return self.min_radius + t_clipped * (self.max_radius - self.min_radius)
+
+
+def build_los_volume(
+    segment: Segment,
+    radius: float = 0.15,
+    *,
+    radius_mode: RadiusMode = RADIUS_MODE_FIXED,
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+    step_length: float | None = None,
+) -> Cylinder:
+    if radius_mode == RADIUS_MODE_FIXED:
+        return Cylinder(segment, radius=radius, radius_mode=radius_mode, step_length=step_length)
+
+    resolved_min = min_radius if min_radius is not None else radius
+    resolved_max = max_radius if max_radius is not None else radius
+    return Cylinder(
+        segment,
+        radius_mode=radius_mode,
+        min_radius=resolved_min,
+        max_radius=resolved_max,
+        step_length=step_length,
+    )
 
 
 def download_dtm_raster(aoi: Polygon, buffer: float = 2.0) -> ahn.AhnRaster:
@@ -253,7 +313,6 @@ def export_grid_to_copc(grid_points: list[Point], output_path: Path):
 
 def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> tuple[np.ndarray[bool], np.ndarray[float]]:
     segment = cylinder.segment
-    radius = float(cylinder.radius)
 
     p1_array = segment.point1.array_coords
 
@@ -270,8 +329,10 @@ def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> tup
     w_mag_sq = np.einsum("ij,ij->i", w, w)
     distances_squared = w_mag_sq + (t**2 * denom) - (2 * t * dots)
 
-    # Return a boolean mask of points within the specified radius, and the projection parameters
-    return distances_squared <= radius**2, t
+    radii = cylinder.radius_at_t(t)
+
+    # Return a boolean mask of points within the local radius, and the projection parameters.
+    return distances_squared <= radii**2, t
 
 
 def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndarray[int]:
@@ -279,15 +340,14 @@ def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndar
     Generate candidate point indices from a KD-tree within a radius of the line segment.
     """
     segment = cylinder.segment
-    radius = float(cylinder.radius)
-
-    step = radius
+    step = float(cylinder.step_length)
     num_samples = max(2, int(np.ceil(segment.length / step)) + 1)
     t = np.linspace(0.0, 1.0, num_samples, dtype=np.float64)
     samples = segment.point1.array_coords + t[:, None] * segment.vector
+    max_radius = float(np.max(cylinder.radius_at_t(t)))
 
     # calculate query radius knowing R_sphere = sqrt(r_cylinder² + (step²/4))
-    query_radius = np.sqrt(radius**2 + (step**2 / 4))
+    query_radius = np.sqrt(max_radius**2 + (step**2 / 4))
     candidate_lists = KDtree.query_ball_point(samples, r=query_radius, workers=1)  # workers=-1 causes too much overhead for small queries.
 
     if len(candidate_lists) == 0:
@@ -391,20 +451,19 @@ def calculate_intervisibility(
     """
 
     segment = cylinder.segment
-    radius = float(cylinder.radius)
-    cross_section_area = np.pi * radius**2
 
     # Define step bins along the segment
-    step_length = radius  # same step size used by the KD-tree sampler
+    step_length = float(cylinder.step_length)
     num_steps = max(1, int(np.ceil(segment.length / step_length)))
 
     # Calculate how many steps fit into one chunk
     steps_per_chunk = max(1, int(np.round(chunk_size / step_length)))
-    query_radius = np.sqrt(radius**2 + (step_length**2 / 4))
 
     # Pre-compute midpoint positions for each step along the ray
     t_mids = (np.arange(num_steps) + 0.5) / num_steps
     all_step_positions = segment.point1.array_coords + t_mids[:, None] * segment.vector
+    step_radii = cylinder.radius_at_t(t_mids)
+    step_areas = np.pi * step_radii**2
 
     # Walk the LoS
     visibility = 1.0
@@ -417,6 +476,8 @@ def calculate_intervisibility(
         # Generate sample points
         t_chunk = np.linspace(start_step / num_steps, end_step / num_steps, (end_step - start_step) + 1)
         chunk_samples = segment.point1.array_coords + t_chunk[:, None] * segment.vector
+        chunk_max_radius = float(np.max(cylinder.radius_at_t(t_chunk)))
+        query_radius = np.sqrt(chunk_max_radius**2 + (step_length**2 / 4))
 
         # Batch query the KDTree for the chunk
         candidate_lists = KDtree.query_ball_point(chunk_samples, r=query_radius)
@@ -458,6 +519,7 @@ def calculate_intervisibility(
 
             # Include the endpoint in the last bin
             current_global_step = start_step + j
+            cross_section_area = float(step_areas[current_global_step])
             if current_global_step == num_steps - 1:
                 in_bin |= t_values == t_hi
 
@@ -494,12 +556,28 @@ def calculate_intervisibility(
     return visibility, los_data
 
 
-def calculate_point_to_point(point_pair: Segment, radius: float) -> float:
-    array_points, array_coords, KDtree = load_points_for_runs([point_pair], radius)
+def calculate_point_to_point(
+    point_pair: Segment,
+    radius: float,
+    *,
+    radius_mode: RadiusMode = RADIUS_MODE_FIXED,
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+    step_length: float | None = None,
+) -> float:
+    load_radius = float(radius) if radius_mode == RADIUS_MODE_FIXED else float(max_radius if max_radius is not None else radius)
+    array_points, array_coords, KDtree = load_points_for_runs([point_pair], load_radius)
     if array_points is None:
         logger.warning("No points loaded for the requested point pair.")
         return 1.0  # Assume full visibility if no points are loaded
-    cylinder_of_sight = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
+    cylinder_of_sight = build_los_volume(
+        Segment(point_pair.point1, point_pair.point2),
+        radius,
+        radius_mode=radius_mode,
+        min_radius=min_radius,
+        max_radius=max_radius,
+        step_length=step_length,
+    )
     visibility, _ = calculate_intervisibility(
         cylinder_of_sight,
         array_points,
@@ -513,6 +591,11 @@ def calculate_viewshed_for_grid(
     target: Point,
     grid_points: list[Point],
     cylinder_radius: float,
+    *,
+    radius_mode: RadiusMode = RADIUS_MODE_FIXED,
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+    step_length: float | None = None,
     input_path: Path = DEFAULT_INPUT,
     output_path: Path = DEFAULT_OUTPUT,
     intervisibility_func: Callable = calculate_intervisibility,
@@ -528,7 +611,9 @@ def calculate_viewshed_for_grid(
     grid_coords = np.array([pt.array_coords for pt in grid_points])
     max_dist = np.max(np.linalg.norm(grid_coords - target.array_coords, axis=1))
 
-    array_points, array_coords, KDtree = load_points_for_runs([dummy_pair], max_dist, input_path=input_path)
+    max_los_radius = float(cylinder_radius) if radius_mode == RADIUS_MODE_FIXED else float(max_radius if max_radius is not None else cylinder_radius)
+    load_radius = max_dist + max_los_radius
+    array_points, array_coords, KDtree = load_points_for_runs([dummy_pair], load_radius, input_path=input_path)
 
     logger.info(f"Computing visibility for {len(grid_points)} grid points.")
 
@@ -537,7 +622,14 @@ def calculate_viewshed_for_grid(
 
     for i, dest in enumerate(tqdm(grid_points, desc="Grid Viewshed", unit="pts")):
         segment = Segment(target, dest)
-        cylinder = Cylinder(segment, cylinder_radius)
+        cylinder = build_los_volume(
+            segment,
+            cylinder_radius,
+            radius_mode=radius_mode,
+            min_radius=min_radius,
+            max_radius=max_radius,
+            step_length=step_length,
+        )
 
         # Calculate visibility and collect per-step LoS data
         visibility_values[i], los_data = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
@@ -574,6 +666,11 @@ def calculate_viewshed(
     target: Point,
     search_radius: float,
     cylinder_radius: float,
+    *,
+    radius_mode: RadiusMode = RADIUS_MODE_FIXED,
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+    step_length: float | None = None,
     input_path: Path = DEFAULT_INPUT,
     output_path: Path = DEFAULT_OUTPUT,
     thinning_factor: int = 1,
@@ -627,7 +724,14 @@ def calculate_viewshed(
         dest = Point(pt_coords[0], pt_coords[1], pt_coords[2])
 
         segment = Segment(target, dest)
-        cylinder = Cylinder(segment, cylinder_radius)
+        cylinder = build_los_volume(
+            segment,
+            cylinder_radius,
+            radius_mode=radius_mode,
+            min_radius=min_radius,
+            max_radius=max_radius,
+            step_length=step_length,
+        )
         visibility_values[i], _ = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
 
     # Build output array with Visibility dimension (only thinned points)
@@ -688,10 +792,15 @@ def calculate_viewshed_2d(
     target: Point,
     aoi: Polygon,
     resolution: float = 1.0,
+    radius: float = 0.15,
+    *,
+    radius_mode: RadiusMode = RADIUS_MODE_FIXED,
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+    step_length: float | None = None,
     input_path: Path = DEFAULT_INPUT,
     output_path: Path = DEFAULT_OUTPUT,
     z_offset: float = 0.0,
-    radius: float = 0.15,
 ) -> tuple[list[Point], np.ndarray, np.ndarray]:
     # Sample points along the AOI boundary at the given resolution
     boundary_points = sample_polygon_boundary(aoi, sample_distance=resolution, z_height=z_offset)
@@ -703,6 +812,10 @@ def calculate_viewshed_2d(
         target=target,
         grid_points=grid_points_nap,
         cylinder_radius=radius,
+        radius_mode=radius_mode,
+        min_radius=min_radius,
+        max_radius=max_radius,
+        step_length=step_length,
         input_path=input_path,
         output_path=output_path.with_suffix(".copc.laz"),
         intervisibility_func=calculate_intervisibility,
