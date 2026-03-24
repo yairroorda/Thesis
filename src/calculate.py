@@ -24,7 +24,7 @@ WRITE_TO_FILE = True  # Control whether to write query outputs to a file.
 
 CLASS_TERRAIN = 2
 CLASS_BUILDING = 6
-CLASS_VEGETATION = {3, 4, 5}  # low, medium, high vegetation classes
+CLASS_VEGETATION = 5
 
 # Figuring out what to set these thresholds to is a key part of the research but we can start with this for now.
 TERRAIN_DENSITY_THRESHOLD = 14
@@ -447,7 +447,7 @@ def calculate_intervisibility(
         # Masks per class (computed once)
         terrain_mask = classifications == CLASS_TERRAIN
         building_mask = classifications == CLASS_BUILDING
-        vegetation_mask = np.isin(classifications, list(CLASS_VEGETATION))
+        vegetation_mask = classifications == CLASS_VEGETATION
 
         # Step through the bins inside this specific chunk
         bin_edges = np.linspace(start_step / num_steps, end_step / num_steps, (end_step - start_step) + 1)
