@@ -1,0 +1,36 @@
+# Simple install with
+# mamba env create -f environment.yml
+name: myria3d
+channels:
+  - pytorch
+  - nvidia
+  - pyg
+  - conda-forge
+dependencies:
+  - python=3.9.*
+  - pip
+  # --------- Deep Learning --------- #
+  - pytorch::pytorch=2.1
+  - pytorch::pytorch-cuda=11.8
+  - conda-forge::lightning=2.0
+  - conda-forge::torchmetrics=0.11
+  - pyg::pyg=2.4
+  - pyg::pytorch-cluster
+  - pyg::pytorch-scatter
+  - pyg::pytorch-sparse
+  # Troubleshooting: if libcusparse.so.11. errors occur, run
+  # export LD_LIBRARY_PATH="/home/${USER}/miniconda/envs/lib:$LD_LIBRARY_PATH"
+  # ou
+  # export LD_LIBRARY_PATH="/home/${USER}/anaconda3/envs/lib:$LD_LIBRARY_PATH"
+  # see https://github.com/pyg-team/pytorch_geometric/issues/2040#issuecomment-766610625
+  # --------- data formats --------- #
+  - numpy
+  # --------- geo --------- #
+  - pdal==2.6.*
+  - python-pdal
+  - conda-forge:gdal
+  - conda-forge:pyproj
+  # --------- others --------- #
+  - pip:
+      - hydra-core==1.1.*
+      - ign-pdal-tools>=1.5.2
