@@ -1,0 +1,63 @@
+[workspace]
+authors = ["yairroorda <yairroorda@gmail.com>"]
+channels = ["conda-forge"]
+name = "Thesis"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[dependencies]
+
+[feature.thesis]
+channels = ["conda-forge", "main", "r", "msys2"]
+
+[feature.thesis.dependencies]
+python = "3.14.2.*"
+geopandas = "1.1.2.*"
+pandas = "<3"
+owslib = "0.35.0.*"
+pdal = "2.9.3.*"
+scipy = "1.16.1.*"
+tqdm = "4.67.3.*"
+pip = "26.0.1.*"
+
+[feature.thesis.pypi-dependencies]
+pdal-plugins = "==3.5.3"
+tkintermapview = "==1.29"
+nlmod = "==0.11.2"
+
+[feature.thesis.tasks]
+pipeline = { cmd = "python src/main.py", description = "Run full pipeline" }
+
+[feature.myria3d]
+channels = ["pytorch", "nvidia", "pyg", "conda-forge"]
+
+[feature.myria3d.dependencies]
+python = "3.9.*"
+pip = "*"
+setuptools = "<81"
+pytorch = { version = "2.1.*", channel = "pytorch" }
+pytorch-cuda = { version = "11.8.*", channel = "pytorch" }
+lightning = { version = "2.0.*", channel = "conda-forge" }
+torchmetrics = { version = "0.11.*", channel = "conda-forge" }
+pyg = { version = "2.4.*", channel = "pyg" }
+pytorch-cluster = { channel = "pyg" }
+pytorch-scatter = { channel = "pyg" }
+pytorch-sparse = { channel = "pyg" }
+numpy = "*"
+pdal = { version = "2.6.*", channel = "conda-forge" }
+python-pdal = { version = "*", channel = "conda-forge" }
+gdal = { version = "*", channel = "conda-forge" }
+pyproj = { version = "*", channel = "conda-forge" }
+libjpeg-turbo = { version = ">=3,<4", channel = "conda-forge" }
+laspy = ">=2.6.1,<3"
+
+[feature.myria3d.pypi-dependencies]
+hydra-core = "==1.1.*"
+ign-pdal-tools = ">=1.5.2"
+
+[feature.myria3d.tasks]
+classify = { cmd = "python src/segment.py", description = "Run Myria3D classification step only" }
+
+[environments]
+thesis = { features = ["thesis"], no-default-feature = true }
+myria3d = { features = ["myria3d"], no-default-feature = true }

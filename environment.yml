@@ -5,11 +5,12 @@ channels:
 dependencies:
   - python=3.14.2
   - geopandas=1.1.2
+  - owslib=0.35.0
   - pdal=2.9.3
   - scipy=1.16.1
   - tqdm=4.67.3
-  - pip
+  - pip=26.0.1
   - pip:
-      - pdal-plugins==1.6.6
+      - pdal-plugins==3.5.3
       - tkintermapview==1.29
       - nlmod==0.11.2
