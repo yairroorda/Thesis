@@ -152,13 +152,13 @@ def _find_tiles(gdf_polygon: gpd.GeoDataFrame, dataset: dict) -> list[str]:
 
 def _execute_pdal(tile_urls: list[str], aoi: Polygon, file_type: str, output_path: Path) -> Path:
     reader_type = "readers.copc" if file_type == "COPC" else "readers.las"
-    readers = []
+    stages = []
+    merge_inputs = []
 
-    for url in tile_urls:
+    for i, url in enumerate(tile_urls):
         if "data.geopf.fr" in url:
             # Reconstruct the direct OVH S3 Classified bucket URL
             OVH_BASE_URL = "https://storage.sbg.cloud.ovh.net/v1/AUTH_63234f509d6048bca3c9fd7928720ca1/ppk-lidar/"
-            orig_filename = url.split("/")[-1]
             orig_filename = url.split("/")[-1]
             match = re.search(r"LAMB93_([A-Z]{2})_", url)
             subfolder = match.group(1) if match else ""
@@ -182,19 +182,24 @@ def _execute_pdal(tile_urls: list[str], aoi: Polygon, file_type: str, output_pat
             else:
                 logger.warning(f"Could not find valid OVH S3 URL for {orig_filename}")
 
-        reader = {"type": reader_type, "filename": url}
+        reader_tag = f"reader_{i}"
+        reader = {"type": reader_type, "filename": url, "tag": reader_tag}
 
         if reader_type == "readers.copc":
             reader["polygon"] = aoi.wkt
             reader["requests"] = 64
+            stages.append(reader)
+            merge_inputs.append(reader_tag)
+        else:
+            crop_tag = f"crop_{i}"
+            crop = {"type": "filters.crop", "polygon": aoi.wkt, "inputs": [reader_tag], "tag": crop_tag}
+            stages.extend([reader, crop])
+            merge_inputs.append(crop_tag)
 
-        readers.append(reader)
-
-    pipeline = readers + [
-        {"type": "filters.merge"},
-        {"type": "filters.crop", "polygon": aoi.wkt},
-        {"type": "writers.copc", "filename": str(output_path), "forward": "all"},
-    ]
+        pipeline = stages + [
+            {"type": "filters.merge", "inputs": merge_inputs},
+            {"type": "writers.copc", "filename": str(output_path), "forward": "all"},
+        ]
 
     with status_spinner("Processing point cloud with PDAL ..."):
         count = pdal.Pipeline(json.dumps(pipeline)).execute()
@@ -243,7 +248,7 @@ def demo_france():
 
 def demo_ahn():
     # aoi = Polygon.get_from_user("Select polygon AOI for AHN query")
-    datasets = ["AHN6"]
+    datasets = ["AHN6", "AHN5", "AHN4"]
 
     aoi_RDnew = Polygon(
         [
@@ -255,6 +260,9 @@ def demo_ahn():
         ]
     )
 
+    # long_strip = Polygon([(6.549750540324112, 53.23743153832469), (6.5780044234527395, 53.20113982971779), (6.578433576895122, 53.201165536330386), (6.549885585048543, 53.237447338051304), (6.549750540324112, 53.23743153832469)])
+    # aoi = Polygon.get_from_user("Select polygon AOI for AHN query")
+
     for dataset in datasets:
         try:
             get_pointcloud_aoi(aoi_RDnew, include=[dataset], output_path=DATA_DIR / f"groningen_plein_{dataset}.copc.laz")
@@ -263,5 +271,5 @@ def demo_ahn():
 
 
 if __name__ == "__main__":
-    demo_france()
-    # demo_ahn()
+    # demo_france()
+    demo_ahn()
