@@ -19,6 +19,7 @@ pdal = "2.9.3.*"
 scipy = "1.16.1.*"
 tqdm = "4.67.3.*"
 pip = "26.0.1.*"
+rich = ">=14.3.3,<15"
 
 [feature.thesis.pypi-dependencies]
 pdal-plugins = "==3.5.3"

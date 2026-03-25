@@ -1,10 +1,22 @@
 import logging
 import time
+from contextlib import contextmanager
 from functools import wraps
 
 import numpy as np
+import rich
+from rich.console import Console
 
 LOGGER_LEVEL = logging.DEBUG
+
+console = Console()
+
+
+@contextmanager
+def status_spinner(message="Processing..."):
+    """Context manager to show a rich spinner during long tasks."""
+    with console.status(message) as status:
+        yield status
 
 
 def timed(label="No label provided"):

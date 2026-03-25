@@ -9,7 +9,7 @@ import pdal
 from shapely.geometry import Polygon as ShapelyPolygon
 
 from gui import make_map
-from utils import get_logger, timed
+from utils import get_logger, status_spinner, timed
 
 logger = get_logger(name="Query")
 
@@ -196,7 +196,9 @@ def _execute_pdal(tile_urls: list[str], aoi: Polygon, file_type: str, output_pat
         {"type": "writers.copc", "filename": str(output_path), "forward": "all"},
     ]
 
-    count = pdal.Pipeline(json.dumps(pipeline)).execute()
+    with status_spinner("Processing point cloud with PDAL ..."):
+        count = pdal.Pipeline(json.dumps(pipeline)).execute()
+
     logger.info(f"Processed {count} points from {len(tile_urls)} tiles into {output_path}.")
     return output_path
 
@@ -233,8 +235,8 @@ def get_pointcloud_aoi(aoi: Polygon, output_path: Path, aoi_crs: str = "EPSG:289
 
 def demo_france():
     logger.info("Starting LiDAR HD Query GUI...")
-    # aoi_wgs84 = Polygon([(2.335270987781712, 48.862575335381095), (2.333844052585789, 48.86009786319193), (2.3366013634530987, 48.85942024260344), (2.339294301304051, 48.85932848077683), (2.3401311505166973, 48.86090958411185), (2.337888823780247, 48.861876573590436), (2.335270987781712, 48.862575335381095)])
-    aoi_wgs84 = Polygon.get_from_user("Select polygon AOI for IGN LiDAR HD query")
+    aoi_wgs84 = Polygon([(2.335270987781712, 48.862575335381095), (2.333844052585789, 48.86009786319193), (2.3366013634530987, 48.85942024260344), (2.339294301304051, 48.85932848077683), (2.3401311505166973, 48.86090958411185), (2.337888823780247, 48.861876573590436), (2.335270987781712, 48.862575335381095)])
+    # aoi_wgs84 = Polygon.get_from_user("Select polygon AOI for IGN LiDAR HD query")
 
     get_pointcloud_aoi(aoi=aoi_wgs84, aoi_crs="EPSG:4326", include=["IGN_LIDAR_HD"], output_path=DATA_DIR / "ign_test.copc.laz")
 
