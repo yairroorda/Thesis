@@ -159,9 +159,12 @@ def _execute_pdal(tile_urls: list[str], aoi: Polygon, file_type: str, output_pat
             # Reconstruct the direct OVH S3 Classified bucket URL
             OVH_BASE_URL = "https://storage.sbg.cloud.ovh.net/v1/AUTH_63234f509d6048bca3c9fd7928720ca1/ppk-lidar/"
             orig_filename = url.split("/")[-1]
+            orig_filename = url.split("/")[-1]
             match = re.search(r"LAMB93_([A-Z]{2})_", url)
             subfolder = match.group(1) if match else ""
             # Try both O and C variants
+            # I dont know exactly what the difference is but some tiles are only available in one of them, so we check both
+            # I cant be bothered to look into it for now
             found_url = None
             for letter in ["O", "C"]:
                 filename = orig_filename.replace("PTS_LAMB93", f"PTS_{letter}_LAMB93")
