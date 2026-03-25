@@ -158,11 +158,26 @@ def _execute_pdal(tile_urls: list[str], aoi: Polygon, file_type: str, output_pat
         if "data.geopf.fr" in url:
             # Reconstruct the direct OVH S3 Classified bucket URL
             OVH_BASE_URL = "https://storage.sbg.cloud.ovh.net/v1/AUTH_63234f509d6048bca3c9fd7928720ca1/ppk-lidar/"
-            filename = url.split("/")[-1].replace("PTS_LAMB93", "PTS_O_LAMB93")
+            orig_filename = url.split("/")[-1]
             match = re.search(r"LAMB93_([A-Z]{2})_", url)
-            subfolder = match.group(1)
-            url = f"{OVH_BASE_URL}{subfolder}/{filename}"
-            logger.debug(f"Rewrote URL to OVH S3: {url}")
+            subfolder = match.group(1) if match else ""
+            # Try both O and C variants
+            found_url = None
+            for letter in ["O", "C"]:
+                filename = orig_filename.replace("PTS_LAMB93", f"PTS_{letter}_LAMB93")
+                test_url = f"{OVH_BASE_URL}{subfolder}/{filename}"
+                try:
+                    with urllib.request.urlopen(test_url) as resp:
+                        if resp.status == 200:
+                            found_url = test_url
+                            break
+                except Exception:
+                    continue
+            if found_url:
+                url = found_url
+                logger.debug(f"Rewrote URL to OVH S3: {url}")
+            else:
+                logger.warning(f"Could not find valid OVH S3 URL for {orig_filename}")
 
         reader = {"type": reader_type, "filename": url}
 
@@ -215,15 +230,15 @@ def get_pointcloud_aoi(aoi: Polygon, output_path: Path, aoi_crs: str = "EPSG:289
 
 def demo_france():
     logger.info("Starting LiDAR HD Query GUI...")
-    aoi_wgs84 = Polygon([(2.335270987781712, 48.862575335381095), (2.333844052585789, 48.86009786319193), (2.3366013634530987, 48.85942024260344), (2.339294301304051, 48.85932848077683), (2.3401311505166973, 48.86090958411185), (2.337888823780247, 48.861876573590436), (2.335270987781712, 48.862575335381095)])
-    # aoi_wgs84 = Polygon.get_from_user("Select polygon AOI for IGN LiDAR HD query")
+    # aoi_wgs84 = Polygon([(2.335270987781712, 48.862575335381095), (2.333844052585789, 48.86009786319193), (2.3366013634530987, 48.85942024260344), (2.339294301304051, 48.85932848077683), (2.3401311505166973, 48.86090958411185), (2.337888823780247, 48.861876573590436), (2.335270987781712, 48.862575335381095)])
+    aoi_wgs84 = Polygon.get_from_user("Select polygon AOI for IGN LiDAR HD query")
 
     get_pointcloud_aoi(aoi=aoi_wgs84, aoi_crs="EPSG:4326", include=["IGN_LIDAR_HD"], output_path=DATA_DIR / "ign_test.copc.laz")
 
 
 def demo_ahn():
     # aoi = Polygon.get_from_user("Select polygon AOI for AHN query")
-    datasets = ["AHN6", "AHN5", "AHN4", "AHN3", "AHN2", "AHN1"]
+    datasets = ["AHN6"]
 
     aoi_RDnew = Polygon(
         [
@@ -244,4 +259,4 @@ def demo_ahn():
 
 if __name__ == "__main__":
     demo_france()
-    demo_ahn()
+    # demo_ahn()
