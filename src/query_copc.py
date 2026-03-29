@@ -14,6 +14,7 @@ from utils import get_logger, status_spinner, timed
 logger = get_logger(name="Query")
 
 DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
 
 _DATASETS = [
     {
