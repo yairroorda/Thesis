@@ -4,51 +4,136 @@
 
 ```text
 .
-|-- src/
-|   |-- main.py
+|-- src/                        # Main application code
+|   |-- main.py                 # Entry point for the full pipeline
 |   |-- calculate.py
+|-- calculations
 |   |-- enhance_facades.py
 |   |-- gui.py
 |   |-- query_copc.py
 |   |-- segment.py
-|   |-- utils.py
-|   `-- visualize.py
-|-- data/
-|-- environment.yml            # Conda environment
+|   |-- utils.py                
+|   |-- visualize.py
+|   `-- __pycache__/
+|-- third_party/
+|   `-- myria3d/                # Vendored Myria3D deep learning model
+|       |-- myria3d/
+|       |-- configs/
+|       |-- trained_model_assets/
+|       |-- environment.yml
+|       `-- LICENSE
+|-- data/                       # Output directory
+|   |-- *.copc.laz              # Processed point cloud files
+|   `-- *.tif                   # GeoTIFF visualizations
+|-- pixi.toml                   # Pixi workspace and environment configuration
 |-- README.md
+|-- LICENSE
 `-- .gitignore
 ```
 
-## Installation & Setup
+### Key Directories
 
-This project uses **Conda** to manage dependencies for handling complex geospatial libraries like PDAL and GeoPandas.
+- **`src/`** — Main Python source code for the pipeline
+- **`third_party/myria3d/`** — Vendored [Myria3D](https://github.com/IGNF/myria3d) model for deep learning-based vegetation classification
+- **`data/`** — Working directory for intermediate and output point clouds. Created automatically on first run.
+
+## Installation & Setup
 
 ### Prerequisites
 
-Ensure you have a **Conda** distribution like [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/) installed on your system.
+This project uses **Pixi** to manage dependencies for handling complex geospatial and deep learning libraries like PDAL, GeoPandas, and PyTorch. The myria3d environment requires Linux—Windows users should use WSL.
 
-### Create the environment
-
-Use the provided `environment.yml` file to set up the evironment.
-From the root of this repo run:
+Install Pixi from [pixi.sh](https://pixi.sh) or using the command below
 
 ```bash
-conda env create -f environment.yml
+curl -fsSL https://pixi.sh/install.sh | sh
 ```
 
-Then activate it by running:
+### Installation on Linux
+
+#### 1. Clone the repository
 
 ```bash
-conda activate thesis_env
+git clone https://github.com/yairroorda/Thesis.git
+cd Thesis
 ```
+
+#### 2. Install environments (optional)
+
+Either install the pixi environment seperatly or directly run the pipeline which will automatically install the environment.
+
+```bash
+pixi install
+```
+
+#### 3. Run the pipeline
+
+```bash
+pixi run pipeline
+```
+
+### Installation on Windows (WSL2)
+
+**Windows / WSL**: The myria3d deep learning environment requires Linux so for that functionality Windows users must use WSL2. Without WSL the thesis environment _should_ still run using the more basic rule-based classification but it is not recommended.
+
+#### 1. Install WSL2 and Ubuntu
+
+```powershell
+wsl.exe --install ubuntu
+```
+
+Then open Ubuntu and update the package manager:
+
+```bash
+sudo apt update
+```
+
+#### 2. Install Pixi in WSL
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | sh
+```
+
+#### 3. Clone the repository to WSL home directory
+
+**Important**: Clone to your WSL home directory (`/home/<user>/`), not to the Windows filesystem mounted at `/mnt/c/`. This avoids file permission issues.
+
+```bash
+cd ~
+mkdir <projectname>
+cd <projectname>
+git clone https://github.com/yairroorda/Thesis.git
+cd Thesis
+```
+
+#### 4. install environments (optional)
+
+Either install the pixi environment separately or directly run the pipeline which will automatically install the environment.
+
+```bash
+pixi install
+```
+
+#### 5. Run the pipeline
+
+```bash
+pixi run pipeline
+```
+
+The full pipeline will run and generate output files in the `data/` directory.
 
 ### How to run
 
-Run the project from `src` with:
+Run the full pipeline:
 
 ```bash
-python main.py
+pixi run pipeline
 ```
+
+Or run individual steps:
+
+- Vegetation classification only: `pixi run -e myria3d classify <filename> <method>`
+- Other custom tasks: See `pixi.toml` for available tasks
 
 ## Preview results
 
