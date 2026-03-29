@@ -60,7 +60,7 @@ cd Thesis
 
 #### 2. Install environments (optional)
 
-Either install the pixi environment seperatly or directly run the pipeline which will automatically install the environment.
+Either install the pixi environment separately or directly run the pipeline which will automatically install the environment. In both cases is will take some time and requires at least **8.5 GB** of disk space.
 
 ```bash
 pixi install
@@ -74,7 +74,7 @@ pixi run pipeline
 
 ### Installation on Windows (WSL2)
 
-**Windows / WSL**: The myria3d deep learning environment requires Linux so for that functionality Windows users must use WSL2. Without WSL the thesis environment _should_ still run using the more basic rule-based classification but it is not recommended.
+**Windows / WSL**: The myria3d deep learning environment requires Linux so for that functionality Windows users must use WSL2.
 
 #### 1. Install WSL2 and Ubuntu
 
@@ -85,6 +85,7 @@ wsl.exe --install ubuntu
 Then open Ubuntu and update the package manager:
 
 ```bash
+wsl
 sudo apt update
 ```
 
@@ -92,6 +93,7 @@ sudo apt update
 
 ```bash
 curl -fsSL https://pixi.sh/install.sh | sh
+bash # restart your terminal after
 ```
 
 #### 3. Clone the repository to WSL home directory
@@ -108,7 +110,7 @@ cd Thesis
 
 #### 4. install environments (optional)
 
-Either install the pixi environment separately or directly run the pipeline which will automatically install the environment.
+Either install the pixi environment separately or directly run the pipeline which will automatically install the environment. In both cases is will take some time and requires at least **8.5 GB** of disk space.
 
 ```bash
 pixi install
