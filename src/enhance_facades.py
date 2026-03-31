@@ -18,11 +18,12 @@ import pdal
 from scipy.spatial import cKDTree
 from shapely import concave_hull
 from shapely.geometry import MultiPoint
+from shapely.geometry import Polygon as ShapelyPolygon
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
 from calculate import download_dtm_raster
-from query_copc import Polygon
+from query_copc import AOIPolygon
 from utils import get_logger, timed
 
 logger = get_logger(name="EnhanceFacades")
@@ -258,11 +259,13 @@ def generate_facades(
         return
 
     # Download DTM raster once for the full aoi extent
-    aoi = Polygon.from_bounds(
-        roof_pts["X"].min(),
-        roof_pts["Y"].min(),
-        roof_pts["X"].max(),
-        roof_pts["Y"].max(),
+    aoi = AOIPolygon(
+        ShapelyPolygon.from_bounds(
+            roof_pts["X"].min(),
+            roof_pts["Y"].min(),
+            roof_pts["X"].max(),
+            roof_pts["Y"].max(),
+        )
     )
     dtm_raster = download_dtm_raster(aoi=aoi, buffer=5.0)
 

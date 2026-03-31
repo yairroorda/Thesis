@@ -9,10 +9,11 @@ from nlmod.read import ahn
 from scipy.spatial import cKDTree
 from shapely import contains
 from shapely import points as shapely_points
+from shapely.geometry import Polygon as ShapelyPolygon
 from tqdm import tqdm
 
 from gui import _TO_RD, make_map
-from query_copc import Polygon
+from query_copc import AOIPolygon
 from utils import get_logger, timed
 
 logger = get_logger(name="Calculate")
@@ -156,7 +157,7 @@ class Cylinder:
         self.radius = radius
 
 
-def download_dtm_raster(aoi: Polygon, buffer: float = 2.0) -> ahn.AhnRaster:
+def download_dtm_raster(aoi: AOIPolygon, buffer: float = 2.0) -> ahn.AhnRaster:
     """
     Download the AHN DTM raster for a given polygon area.
     """
@@ -197,7 +198,7 @@ def sample_dtm(dtm_raster, points: list[Point]) -> np.ndarray:
     return ground
 
 
-def generate_grid(Area: Polygon, resolution: int, z_height: float = 0.0, two_d: bool = False) -> list[Point]:
+def generate_grid(Area: AOIPolygon, resolution: int, z_height: float = 0.0, two_d: bool = False) -> list[Point]:
     """Generate a grid of points within the given area polygon, with the specified resolution and optional Z height."""
     min_x, min_y, max_x, max_y = Area.bounds
 
@@ -220,7 +221,7 @@ def generate_grid(Area: Polygon, resolution: int, z_height: float = 0.0, two_d: 
     return [Point(x, y, z) for x, y, z in filtered]
 
 
-def sample_polygon_boundary(polygon: Polygon, sample_distance: float, z_height: float = 0.0) -> list[Point]:
+def sample_polygon_boundary(polygon: AOIPolygon, sample_distance: float, z_height: float = 0.0) -> list[Point]:
     """Sample points at regular intervals along the exterior boundary of a polygon."""
     boundary = polygon.exterior
     total_length = boundary.length
@@ -652,7 +653,7 @@ def hag_to_nap(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
     """
     xs = np.array([p.x for p in points])
     ys = np.array([p.y for p in points])
-    aoi = Polygon.from_bounds(xs.min(), ys.min(), xs.max(), ys.max())
+    aoi = AOIPolygon(ShapelyPolygon.from_bounds(xs.min(), ys.min(), xs.max(), ys.max()))
     dtm = download_dtm_raster(aoi=aoi, buffer=buffer)
     ground_levels = sample_dtm(dtm, points).tolist()
     translated_points = []
@@ -671,7 +672,7 @@ def nap_to_hag(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
     """
     xs = np.array([p.x for p in points])
     ys = np.array([p.y for p in points])
-    aoi = Polygon.from_bounds(xs.min(), ys.min(), xs.max(), ys.max())
+    aoi = AOIPolygon(ShapelyPolygon.from_bounds(xs.min(), ys.min(), xs.max(), ys.max()))
     dtm = download_dtm_raster(aoi=aoi, buffer=buffer)
     ground_levels = sample_dtm(dtm, points).tolist()
     translated_points = []
@@ -686,7 +687,7 @@ def nap_to_hag(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
 
 def calculate_viewshed_2d(
     target: Point,
-    aoi: Polygon,
+    aoi: AOIPolygon,
     resolution: float = 1.0,
     input_path: Path = DEFAULT_INPUT,
     output_path: Path = DEFAULT_OUTPUT,
@@ -716,15 +717,7 @@ def demo_viewshed_2d():
     target_NAP = Point(233851.5, 581986.8, 1.7)
     target = hag_to_nap([target_NAP])[0]
     export_grid_to_copc([target], output_path=Path("data/target_point.copc.laz"))
-    aoi = Polygon(
-        [
-            (233691.30497727558, 581987.2869825428),
-            (233875.81124650215, 582056.8082196123),
-            (233921.904485486, 581956.0270049961),
-            (233758.77601513162, 581894.0032933606),
-            (233691.30497727558, 581987.2869825428),
-        ]
-    )
+    aoi = AOIPolygon.get_from_file(Path("data/Groningen_plein.geojson"))
     resolution = 1.0
     radius = 0.15
     output_path = Path("data/viewshed_2d_output")
@@ -741,7 +734,7 @@ def demo_viewshed_2d():
 
 def demo_viewshed_from_grid():
     target = Point.get_from_user("Select target point for viewshed calculation")
-    area = Polygon.get_from_user("Select area for grid generation")
+    area = AOIPolygon.get_from_user("Select area for grid generation")
     resolution = 1.0
     grid_points = generate_grid(area, resolution, z_height=40.0)
     radius = 0.15
@@ -784,7 +777,7 @@ def demo_point_to_point():
 
 
 def demo_hag_grid():
-    area = Polygon.get_from_user("Select area for HAG grid generation")
+    area = AOIPolygon.get_from_user("Select area for HAG grid generation")
     grid_points = generate_grid(area, resolution=1.0, z_height=0.0)
 
     nap_points = hag_to_nap(grid_points)

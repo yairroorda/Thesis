@@ -48,16 +48,15 @@ _DATASETS = [
 ]
 
 
-class Polygon(ShapelyPolygon):
-    """Shapely Polygon subclass with a GUI constructor."""
+class AOIPolygon:
+    def __init__(self, polygon: ShapelyPolygon):
+        self.polygon = polygon
 
     @classmethod
-    def get_from_user(cls, title: str = "Draw polygon") -> "Polygon":
-        """Let the user draw a polygon on the map."""
+    def get_from_user(cls, title: str = "Draw polygon") -> "AOIPolygon":
         import tkinter as tk
 
         root, map_widget, controls = make_map(title)
-
         points_latlon: list[tuple[float, float]] = []
         polygon = {"obj": None}
         marker_list: list = []
@@ -68,7 +67,6 @@ class Polygon(ShapelyPolygon):
             for m in marker_list:
                 m.delete()
             marker_list.clear()
-
             for pt in points_latlon:
                 marker_list.append(map_widget.set_marker(*pt))
             if len(points_latlon) == 2:
@@ -91,7 +89,27 @@ class Polygon(ShapelyPolygon):
         root.mainloop()
         root.destroy()
 
-        return cls([(lon, lat) for lat, lon in points_latlon])  # returns in WGS84 (lon, lat)
+        poly = ShapelyPolygon([(lon, lat) for lat, lon in points_latlon])
+        return cls(poly)
+
+    def save_to_file(self, path: Path, crs="EPSG:4326") -> None:
+        gdf = gpd.GeoDataFrame(geometry=[self.polygon], crs=crs)
+        gdf.to_file(path, driver="GeoJSON")
+
+    @classmethod
+    def get_from_file(cls, path: Path) -> "AOIPolygon":
+        gdf = gpd.read_file(path)
+        if gdf.empty:
+            raise ValueError(f"No geometry found in {path}")
+        return cls(gdf.geometry.iloc[0])
+
+    @property
+    def wkt(self):
+        return self.polygon.wkt
+
+    def __getattr__(self, attr):
+        # Delegate attribute access to the underlying polygon
+        return getattr(self.polygon, attr)
 
 
 def _download_index(cache_name: str, index_url: str) -> Path:
@@ -151,7 +169,7 @@ def _find_tiles(gdf_polygon: gpd.GeoDataFrame, dataset: dict) -> list[str]:
         return list(dict.fromkeys(urls))
 
 
-def _execute_pdal(tile_urls: list[str], aoi: Polygon, file_type: str, output_path: Path) -> Path:
+def _execute_pdal(tile_urls: list[str], aoi: AOIPolygon, file_type: str, output_path: Path) -> Path:
     reader_type = "readers.copc" if file_type == "COPC" else "readers.las"
     stages = []
     merge_inputs = []
@@ -210,7 +228,7 @@ def _execute_pdal(tile_urls: list[str], aoi: Polygon, file_type: str, output_pat
 
 
 @timed("Pointcloud query")
-def get_pointcloud_aoi(aoi: Polygon, output_path: Path, aoi_crs: str = "EPSG:28992", include: list[str] | None = None) -> Path:
+def get_pointcloud_aoi(aoi: AOIPolygon, output_path: Path, aoi_crs: str = "EPSG:28992", include: list[str] | None = None) -> Path:
     """Download point cloud for the given area and save to output_path."""
     datasets = [d for d in _DATASETS if include is None or d["name"] in include]
 
@@ -241,28 +259,22 @@ def get_pointcloud_aoi(aoi: Polygon, output_path: Path, aoi_crs: str = "EPSG:289
 
 def demo_france():
     logger.info("Starting LiDAR HD Query GUI...")
-    aoi_wgs84 = Polygon([(2.335270987781712, 48.862575335381095), (2.333844052585789, 48.86009786319193), (2.3366013634530987, 48.85942024260344), (2.339294301304051, 48.85932848077683), (2.3401311505166973, 48.86090958411185), (2.337888823780247, 48.861876573590436), (2.335270987781712, 48.862575335381095)])
-    # aoi_wgs84 = Polygon.get_from_user("Select polygon AOI for IGN LiDAR HD query")
+    aoi_wgs84 = AOIPolygon(
+        ShapelyPolygon([(2.335270987781712, 48.862575335381095), (2.333844052585789, 48.86009786319193), (2.3366013634530987, 48.85942024260344), (2.339294301304051, 48.85932848077683), (2.3401311505166973, 48.86090958411185), (2.337888823780247, 48.861876573590436), (2.335270987781712, 48.862575335381095)])
+    )
+    # aoi_wgs84 = AOIPolygon.get_from_user("Select polygon AOI for IGN LiDAR HD query")
 
     get_pointcloud_aoi(aoi=aoi_wgs84, aoi_crs="EPSG:4326", include=["IGN_LIDAR_HD"], output_path=DATA_DIR / "ign_test.copc.laz")
 
 
 def demo_ahn():
-    # aoi = Polygon.get_from_user("Select polygon AOI for AHN query")
+    # aoi = AOIPolygon.get_from_user("Select polygon AOI for AHN query")
     datasets = ["AHN6", "AHN5", "AHN4"]
 
-    aoi_RDnew = Polygon(
-        [
-            (233691.30497727558, 581987.2869825428),
-            (233875.81124650215, 582056.8082196123),
-            (233921.904485486, 581956.0270049961),
-            (233758.77601513162, 581894.0032933606),
-            (233691.30497727558, 581987.2869825428),
-        ]
-    )
+    aoi_RDnew = AOIPolygon.get_from_file(Path("data/Groningen_plein.geojson"))
 
-    # long_strip = Polygon([(6.549750540324112, 53.23743153832469), (6.5780044234527395, 53.20113982971779), (6.578433576895122, 53.201165536330386), (6.549885585048543, 53.237447338051304), (6.549750540324112, 53.23743153832469)])
-    # aoi = Polygon.get_from_user("Select polygon AOI for AHN query")
+    # long_strip = AOIPolygon(ShapelyPolygon([(6.549750540324112, 53.23743153832469), (6.5780044234527395, 53.20113982971779), (6.578433576895122, 53.201165536330386), (6.549885585048543, 53.237447338051304), (6.549750540324112, 53.23743153832469)]))
+    # aoi = AOIPolygon.get_from_user("Select polygon AOI for AHN query")
 
     for dataset in datasets:
         try:
@@ -273,4 +285,11 @@ def demo_ahn():
 
 if __name__ == "__main__":
     # demo_france()
-    demo_ahn()
+    # demo_ahn()
+
+    aoi = AOIPolygon.get_from_user("Select area of interest for main processing demo")
+
+    aoi.save_to_file(path=DATA_DIR / "test.geojson")
+    aoi_from_file = AOIPolygon.get_from_file(DATA_DIR / "test.geojson")
+
+    get_pointcloud_aoi(aoi_from_file, aoi_crs="EPSG:4326", include=["IGN_LIDAR_HD"], output_path=DATA_DIR / "test.copc.laz")

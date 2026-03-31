@@ -3,7 +3,7 @@ from pathlib import Path
 
 from calculate import Point, calculate_viewshed_2d, export_grid_to_copc, hag_to_nap
 from enhance_facades import generate_facades
-from query_copc import Polygon, get_pointcloud_aoi
+from query_copc import AOIPolygon, get_pointcloud_aoi
 from segment import classify_vegetation_rule_based
 from utils import get_logger, timed
 from visualize import save_viewshed_as_tif
@@ -15,20 +15,12 @@ logger = get_logger(name="Main")
 def main(name: str = "test", dataset: list[str] | None = None, classification_method: str = "myria3d", resolution: float = 0.5, radius: float = 0.15) -> None:
 
     # Query the relevant points
-    # aoi = Polygon.get_from_user("Select area of interest")
-    aoi = Polygon(
-        [
-            (233691.30497727558, 581987.2869825428),
-            (233875.81124650215, 582056.8082196123),
-            (233921.904485486, 581956.0270049961),
-            (233758.77601513162, 581894.0032933606),
-            (233691.30497727558, 581987.2869825428),
-        ]
-    )
+    # aoi = AOIPolygon.get_from_user("Select area of interest")
+    aoi = AOIPolygon.get_from_file(Path("data/Groningen_plein.geojson"))
 
     # Query the relevant points
     output_copc_path = Path(f"data/{name}.copc.laz")
-    get_pointcloud_aoi(aoi, include=dataset, output_path=output_copc_path)
+    get_pointcloud_aoi(aoi, aoi_crs="EPSG:28992", include=dataset, output_path=output_copc_path)
 
     # Classify vegetation
     output_classified_path = Path(f"data/{name}_classified.copc.laz")

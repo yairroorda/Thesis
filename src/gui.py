@@ -32,12 +32,12 @@ def make_map(title):
 
 def main():
     from calculate import Point, Segment
-    from query_copc import Polygon
+    from query_copc import AOIPolygon
     from utils import get_logger
 
     logger = get_logger(name="GUI Test")
 
-    polygon = Polygon.get_from_user("Test polygon input")
+    polygon = AOIPolygon.get_from_user("Test polygon input")
     logger.info(f"Collected polygon: {polygon}")
     points = Segment.get_from_user("Test points input")
     logger.info(f"Collected points: SEGMENT(POINT({points.point1.x}, {points.point1.y}, {points.point1.z}), POINT({points.point2.x}, {points.point2.y}, {points.point2.z}))")

@@ -4,8 +4,8 @@ import numpy as np
 import rasterio
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
-from shapely import Polygon
 
+from calculate import AOIPolygon
 from utils import get_logger, timed
 
 logger = get_logger("Visualize")
@@ -16,7 +16,7 @@ def save_viewshed_as_tif(
     x_coords: np.ndarray,
     y_coords: np.ndarray,
     visibility_values: np.ndarray,
-    aoi: Polygon,
+    aoi: AOIPolygon,
     resolution: float,
     output_path: Path,
 ) -> None:
