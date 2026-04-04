@@ -49,8 +49,9 @@ _DATASETS = [
 
 
 class AOIPolygon:
-    def __init__(self, polygon: ShapelyPolygon):
+    def __init__(self, polygon: ShapelyPolygon, crs: str = "EPSG:28992"):
         self.polygon = polygon
+        self.crs = crs
 
     @classmethod
     def get_from_user(cls, title: str = "Draw polygon") -> "AOIPolygon":
@@ -90,10 +91,11 @@ class AOIPolygon:
         root.destroy()
 
         poly = ShapelyPolygon([(lon, lat) for lat, lon in points_latlon])
-        return cls(poly)
+        return cls(poly, crs="EPSG:4326")
 
-    def save_to_file(self, path: Path, crs="EPSG:4326") -> None:
-        gdf = gpd.GeoDataFrame(geometry=[self.polygon], crs=crs)
+    def save_to_file(self, path: Path, crs: str | None = None) -> None:
+        output_crs = crs or self.crs
+        gdf = gpd.GeoDataFrame(geometry=[self.polygon], crs=output_crs)
         gdf.to_file(path, driver="GeoJSON")
 
     @classmethod
@@ -101,7 +103,15 @@ class AOIPolygon:
         gdf = gpd.read_file(path)
         if gdf.empty:
             raise ValueError(f"No geometry found in {path}")
-        return cls(gdf.geometry.iloc[0])
+        source_crs = gdf.crs.to_string() if gdf.crs else "EPSG:4326"
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326")
+        return cls(gdf.geometry.iloc[0], crs=source_crs)
+
+    def to_crs(self, crs: str) -> "AOIPolygon":
+        gdf = gpd.GeoDataFrame(geometry=[self.polygon], crs=self.crs)
+        gdf_projected = gdf.to_crs(crs)
+        return AOIPolygon(gdf_projected.geometry.iloc[0], crs=crs)
 
     @property
     def wkt(self):
@@ -259,9 +269,7 @@ def get_pointcloud_aoi(aoi: AOIPolygon, output_path: Path, aoi_crs: str = "EPSG:
 
 def demo_france():
     logger.info("Starting LiDAR HD Query GUI...")
-    aoi_wgs84 = AOIPolygon(
-        ShapelyPolygon([(2.335270987781712, 48.862575335381095), (2.333844052585789, 48.86009786319193), (2.3366013634530987, 48.85942024260344), (2.339294301304051, 48.85932848077683), (2.3401311505166973, 48.86090958411185), (2.337888823780247, 48.861876573590436), (2.335270987781712, 48.862575335381095)])
-    )
+    aoi_wgs84 = AOIPolygon.get_from_file(Path("data/Paris_eiffel_tower.geojson"))
     # aoi_wgs84 = AOIPolygon.get_from_user("Select polygon AOI for IGN LiDAR HD query")
 
     get_pointcloud_aoi(aoi=aoi_wgs84, aoi_crs="EPSG:4326", include=["IGN_LIDAR_HD"], output_path=DATA_DIR / "ign_test.copc.laz")

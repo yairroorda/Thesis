@@ -43,6 +43,25 @@ class Point:
         self.z = z
 
     @classmethod
+    def get_from_file(cls, path: Path) -> "Point":
+        """Read first point from COPC/LAZ and return it as a Point."""
+        reader_type = "readers.copc" if ".copc" in path.name.lower() else "readers.las"
+        pipeline = pdal.Pipeline(
+            json.dumps(
+                {
+                    "pipeline": [
+                        {"type": reader_type, "filename": str(path)},
+                    ]
+                }
+            )
+        )
+        count = pipeline.execute()
+        if count == 0 or not pipeline.arrays:
+            raise ValueError(f"No points found in target source file: {path}")
+        first = pipeline.arrays[0][0]
+        return cls(float(first["X"]), float(first["Y"]), float(first["Z"]))
+
+    @classmethod
     def get_from_user(cls, title: str = "Set point") -> "Point":
         """Let the user pick one point on the map. Returns (x, y, z) in RD."""
         import tkinter as tk

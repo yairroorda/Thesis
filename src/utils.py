@@ -1,10 +1,12 @@
 import logging
+import shutil
 import time
 from contextlib import contextmanager
 from functools import wraps
+from pathlib import Path
+from typing import Union
 
 import numpy as np
-import rich
 from rich.console import Console
 
 LOGGER_LEVEL = logging.DEBUG
@@ -40,17 +42,38 @@ def timed(label="No label provided"):
     return decorator
 
 
-def get_logger(name="thesis"):
-    """Return a configured logger (idempotent)."""
+def get_logger(name="thesis", logfile_path=None, level=None):
+    """Return a configured logger (idempotent). Optionally add a file handler."""
     logger = logging.getLogger(name)
+    formatter = logging.Formatter("[%(levelname)s] | %(name)s | %(message)s")
     if not logger.handlers:
         handler = logging.StreamHandler()
-        formatter = logging.Formatter("[%(levelname)s] | %(name)s | %(message)s")
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         logger.propagate = False
-    logger.setLevel(LOGGER_LEVEL)
+    if logfile_path:
+        file_target = str(Path(logfile_path).resolve())
+        has_file_handler = any(isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == file_target for h in logger.handlers)
+        if not has_file_handler:
+            file_handler = logging.FileHandler(file_target)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+    if level is not None:
+        logger.setLevel(level)
+    else:
+        logger.setLevel(LOGGER_LEVEL)
     return logger
+
+
+def prepare_run_folder(base_dir: Union[str, Path], run_name: str, overwrite: bool = False) -> Path:
+    """Create isolated run folder data/<run_name>, with overwrite support."""
+    folder = Path(base_dir) / run_name
+    if folder.exists():
+        if not overwrite:
+            raise FileExistsError(f"Run folder '{folder}' already exists. Use overwrite to replace it.")
+        shutil.rmtree(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
 def compare(

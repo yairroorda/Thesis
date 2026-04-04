@@ -1,0 +1,14 @@
+# Example configuration file for project output and logging
+
+[production]
+save_files = ["input_copc", "metadata", "aoi_geojson", "output_viewshed_tif"]
+logging_level = "INFO"
+
+[testing]
+save_files = ["input_copc", "metadata", "aoi_geojson", "output_viewshed_tif", "output_viewshed_copc", "facades_copc", "intermediate_copc"]
+logging_level = "DEBUG"
+
+# Users can add more profiles as needed
+# [custom_profile]
+# save_files = [ ... ]
+# logging_level = "INFO"

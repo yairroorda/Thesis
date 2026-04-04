@@ -22,9 +22,13 @@
 |       |-- trained_model_assets/
 |       |-- environment.yml
 |       `-- LICENSE
-|-- data/                       # Output directory
-|   |-- *.copc.laz              # Processed point cloud files
-|   `-- *.tif                   # GeoTIFF visualizations
+|-- data/                       # Output directory with isolated run folders
+|   |-- run1/
+|   |   |-- input.copc.laz
+|   |   |-- viewshed.tif
+|   |   |-- metadata.json
+|   |   `-- run.log
+|   `-- run2/
 |-- pixi.toml                   # Pixi workspace and environment configuration
 |-- README.md
 |-- LICENSE
@@ -35,7 +39,7 @@
 
 - **`src/`** — Main Python source code for the pipeline
 - **`third_party/myria3d/`** — Vendored [Myria3D](https://github.com/IGNF/myria3d) model for deep learning-based vegetation classification
-- **`data/`** — Working directory for intermediate and output point clouds. Created automatically on first run.
+- **`data/`** — Contains run folders. Each run writes all files into `data/<run_name>/`.
 
 ## Installation & Setup
 
@@ -123,6 +127,19 @@ pixi run pipeline
 ```
 
 The full pipeline will run and generate output files in the `data/` directory.
+
+### Output and profiles
+
+- Outputs are stored in `data/<run_name>/` (one folder per run).
+- File names inside a run folder are stable, for example: `input.copc.laz`, `viewshed.tif`, `metadata.json`, `run.log`.
+- If run name is not set, the application uses `tmp`.
+- If a run folder already exists, the pipeline raises an error unless overwrite is enabled.
+- A metadata JSON and run logfile are generated per run: `metadata.json`, `run.log`.
+- Profile behavior is configured in `config.toml`.
+- `production` keeps minimal files.
+- `testing` keeps additional intermediate outputs.
+
+When `THESIS_PROFILE` is not set, the application defaults to `production`.
 
 ### How to run
 
