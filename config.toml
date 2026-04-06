@@ -1,11 +1,11 @@
 # Example configuration file for project output and logging
 
 [production]
-save_files = ["input_copc", "metadata", "aoi_geojson", "output_viewshed_tif"]
+remove = ["input_copc", "classified_copc", "rescaled_copc", "grid_shell_copc", "output_viewshed_copc_3d", "output_viewshed_copc_2d"]
 logging_level = "INFO"
 
 [testing]
-save_files = ["input_copc", "metadata", "aoi_geojson", "output_viewshed_tif", "output_viewshed_copc", "facades_copc", "intermediate_copc"]
+remove = ["rescaled_copc"]
 logging_level = "DEBUG"
 
 # Users can add more profiles as needed

@@ -15,10 +15,11 @@ from tqdm import tqdm
 from gui import _TO_RD, make_map
 from query_copc import AOIPolygon
 from utils import get_logger, timed
+from visualize import save_viewshed_as_tif
 
 logger = get_logger(name="Calculate")
 
-DEFAULT_INPUT = Path(r"data/groningen_plein_AHN4_facades.copc.laz")
+DEFAULT_INPUT = Path(r"data/Groningen_plein_AHN4/facades.copc.laz")
 DEFAULT_OUTPUT = Path(r"data/output_viewshed_shell.copc.laz")
 
 WRITE_TO_FILE = True  # Control whether to write query outputs to a file.
@@ -234,7 +235,7 @@ def generate_grid(Area: AOIPolygon, resolution: int, z_height: float = 0.0, two_
 
     # Vectorized polygon containment check (Shapely >= 2.0)
     geom_points = shapely_points(all_points[:, :2])
-    mask = contains(Area, geom_points)
+    mask = contains(Area.polygon, geom_points)
 
     filtered = all_points[mask]
     return [Point(x, y, z) for x, y, z in filtered]
@@ -724,7 +725,7 @@ def calculate_viewshed_2d(
         grid_points=grid_points_nap,
         cylinder_radius=radius,
         input_path=input_path,
-        output_path=output_path.with_suffix(".copc.laz"),
+        output_path=output_path,
         intervisibility_func=calculate_intervisibility,
         chunk_size=DEFAULT_CHUNK_SIZE,
     )
@@ -732,11 +733,131 @@ def calculate_viewshed_2d(
     return grid_points_nap, visibility_values, visibility_points
 
 
+def calculate_flight_height(
+    aoi: AOIPolygon,
+    resolution: float = 1.0,
+    input_path: Path = DEFAULT_INPUT,
+    output_path: Path = DEFAULT_OUTPUT,
+    visibility_threshold: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute HAG flight height grid from visible 3D viewshed points."""
+
+    # Get points from the 3d vieshed below the visibility threshold
+    minx, miny, maxx, maxy = aoi.bounds
+    pipeline = {
+        "pipeline": [
+            {"type": "readers.copc", "filename": str(input_path)},
+            {"type": "filters.range", "limits": f"Visibility({visibility_threshold}:)"},
+        ]
+    }
+    pl = pdal.Pipeline(json.dumps(pipeline))
+    pl.execute()
+    arr = pl.arrays[0]
+    X = arr["X"]
+    Y = arr["Y"]
+    Z = arr["Z"]
+
+    # Create a grid at the specified resolution and find the minimum Z value for points that fall into each grid cell
+    x_coords = np.arange(minx, maxx + resolution, resolution)
+    y_coords = np.arange(miny, maxy + resolution, resolution)
+    grid_xx, grid_yy = np.meshgrid(x_coords, y_coords, indexing="xy")
+    grid_min_z = np.full(grid_xx.shape, np.nan, dtype=float)
+
+    xi = np.floor((X - minx) / resolution).astype(int)
+    yi = np.floor((Y - miny) / resolution).astype(int)
+    for x, y, z in zip(xi, yi, Z):
+        current = grid_min_z[y, x]
+        if np.isnan(current) or z < current:
+            grid_min_z[y, x] = z
+
+    # Fill empty cells with the maximum Z value from the input points (or 0 if no points)
+    max_z = np.nanmax(Z) if Z.size > 0 else 0.0
+    grid_min_z[np.isnan(grid_min_z)] = max_z
+
+    # Flatten the grid arrays
+    flat_x = grid_xx.ravel()
+    flat_y = grid_yy.ravel()
+    flat_z = grid_min_z.ravel()
+
+    # Calculate HAG
+    grid_points = [Point(x, y, 0.0) for x, y in zip(flat_x, flat_y)]
+    try:
+        ground_elev = sample_dtm(download_dtm_raster(aoi, buffer=2.0), grid_points)
+    except Exception as e:
+        logger.warning(f"Could not sample DTM for HAG conversion: {e}")
+        ground_elev = np.zeros_like(flat_z)
+    flat_hag = flat_z - ground_elev
+
+    save_viewshed_as_tif(
+        x_coords=flat_x,
+        y_coords=flat_y,
+        visibility_values=flat_hag,
+        aoi=aoi,
+        resolution=resolution,
+        output_path=output_path,
+    )
+
+    return flat_x, flat_y, flat_hag
+
+
+def demo_flight_height():
+    """
+    Interactive demo: select target and AOI, generate 3D grid, compute 3D viewshed, then compute flight height ceiling and output GeoTIFF.
+    """
+
+    # Select target and AOI interactively
+    target_NAP = Point(233851.5, 581986.8, 1.7)
+    target = hag_to_nap([target_NAP])[0]
+    export_grid_to_copc([target], output_path=Path("data/target_point.copc.laz"))
+    aoi = AOIPolygon.get_from_file(Path("data/example_aoi/Groningen_plein.geojson"))
+    resolution = 2.0
+    radius = 0.15
+    z_height = 100.0  # max Z for grid
+    # Only use the shell: top surface and vertical walls
+    # Top surface (z = z_height)
+    top_points = generate_grid(aoi, resolution, z_height=z_height, two_d=True)
+    for pt in top_points:
+        pt.z = z_height
+    # Vertical walls: sample boundary at multiple heights
+    boundary_points = sample_polygon_boundary(aoi, sample_distance=resolution, z_height=0.0)
+    wall_zs = np.arange(0, z_height + resolution, resolution)
+    wall_points = [Point(pt.x, pt.y, z) for pt in boundary_points for z in wall_zs]
+    # Combine shell points
+    grid_points = top_points + wall_points
+    export_grid_to_copc(grid_points, output_path=Path("data/grid_points_3d_shell.copc.laz"))
+
+    # Compute 3D viewshed for shell grid points
+    radius = 0.15
+    chunk_size = 5
+    viewshed_output_path = Path("data/viewshed_3d_output.copc.laz")
+    calculate_viewshed_for_grid(
+        target=target,
+        grid_points=grid_points,
+        cylinder_radius=radius,
+        input_path=DEFAULT_INPUT,
+        output_path=viewshed_output_path,
+        intervisibility_func=calculate_intervisibility,
+        chunk_size=chunk_size,
+    )
+
+    # Compute flight height ceiling from the 3D viewshed COPC
+    flight_height_output_path = Path("data/flight_height_output.tif")
+    calculate_flight_height(
+        aoi=aoi,
+        resolution=resolution,
+        input_path=viewshed_output_path,
+        output_path=flight_height_output_path,
+        visibility_threshold=0.5,
+    )
+
+    print(f"Flight height GeoTIFF written to {flight_height_output_path}")
+
+
 def demo_viewshed_2d():
     target_NAP = Point(233851.5, 581986.8, 1.7)
     target = hag_to_nap([target_NAP])[0]
     export_grid_to_copc([target], output_path=Path("data/target_point.copc.laz"))
-    aoi = AOIPolygon.get_from_file(Path("data/Groningen_plein.geojson"))
+    aoi = AOIPolygon.get_from_file(Path("data/example_aoi/Groningen_plein.geojson"))
     resolution = 1.0
     radius = 0.15
     output_path = Path("data/viewshed_2d_output")
@@ -805,6 +926,23 @@ def demo_hag_grid():
     export_grid_to_copc(nap_points, output_path=output_path)
 
 
+def only_save_viewable_volume(input_path: Path, output_path: Path):
+    pipeline = {
+        "pipeline": [
+            {"type": "readers.copc", "filename": str(input_path)},
+            {"type": "filters.range", "limits": "Visibility(0.0:)"},  # Only keep points where visibility >= 0.0
+        ]
+    }
+    pl = pdal.Pipeline(json.dumps(pipeline))
+    pl.execute()
+    arr = pl.arrays[0]
+    if arr.size == 0:
+        logger.warning("No points with Visibility >= 0.0 found in the input file.")
+        return
+    write_to_copc(arr, output_path)
+    logger.info(f"Saved viewable volume to {output_path}")
+
+
 if __name__ == "__main__":
     # city_block = Segment(Point(233609.0, 581598.0, 0.0), Point(233957.0, 581946.0, 20.0))
     # park = Segment(Point(233974.5, 582114.2, 5.0), Point(233912.2, 582187.5, 10.0))
@@ -813,4 +951,6 @@ if __name__ == "__main__":
     # demo_viewshed_from_cloud()
     # demo_viewshed_from_grid()
     # demo_hag_grid()
-    demo_viewshed_2d()
+    # demo_viewshed_2d()
+    demo_flight_height()
+    only_save_viewable_volume(input_path=Path("data/viewshed_3d_output.copc.laz"), output_path=Path("data/viewable_volume.copc.laz"))

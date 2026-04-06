@@ -5,7 +5,7 @@ import rasterio
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
 
-from calculate import AOIPolygon
+from query_copc import AOIPolygon
 from utils import get_logger, timed
 
 logger = get_logger("Visualize")

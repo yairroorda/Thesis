@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -7,9 +6,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import tomllib
 
-from calculate import Point, calculate_viewshed_2d, export_grid_to_copc
+from calculate import Point, calculate_flight_height, calculate_intervisibility, calculate_viewshed_2d, calculate_viewshed_for_grid, export_grid_to_copc, generate_grid, sample_polygon_boundary
 from enhance_facades import generate_facades
 from query_copc import AOIPolygon, get_pointcloud_aoi
 from segment import classify_vegetation_rule_based
@@ -34,8 +34,11 @@ def _path_map(run_folder: Path) -> dict[str, Path]:
         "rescaled_copc": run_folder / "rescaled.copc.laz",
         "facades_copc": run_folder / "facades.copc.laz",
         "target_point_copc": run_folder / "target_point.copc.laz",
-        "output_viewshed_copc": run_folder / "viewshed.copc.laz",
+        "grid_shell_copc": run_folder / "grid_points_3d_shell.copc.laz",
+        "output_viewshed_copc_2d": run_folder / "viewshed_2d.copc.laz",
+        "output_viewshed_copc_3d": run_folder / "viewshed_3d.copc.laz",
         "output_viewshed_tif": run_folder / "viewshed.tif",
+        "output_flight_height_tif": run_folder / "flight_height.tif",
         "aoi_geojson": run_folder / "aoi.geojson",
         "metadata": run_folder / "metadata.json",
         "log": run_folder / "run.log",
@@ -90,6 +93,7 @@ def main(
     aoi_source: Optional[Path] = None,
     overwrite: bool = False,
     target_source: Optional[Path] = None,
+    z_height: float = 50.0,
 ) -> None:
     start_time = time.perf_counter()
     config, active_profile = load_config(profile)
@@ -117,7 +121,7 @@ def main(
     output_classified_path = paths["classified_copc"]
     if classification_method == "myria3d":
         logger.info("Delegating vegetation classification to Myria3D Pixi environment")
-        result = subprocess.run(f"pixi run -e myria3d python src/segment.py {name} {classification_method}", shell=True)
+        result = subprocess.run(f"pixi run -e myria3d python src/segment.py {run_name} {classification_method}", shell=True)
         if result.returncode != 0:
             raise RuntimeError(f"Myria3D classification failed with exit code {result.returncode}.")
 
@@ -131,10 +135,12 @@ def main(
     output_facades_path = paths["facades_copc"]
     generate_facades(output_classified_path, output_facades_path)
 
-    # Generate 2D viewshed
     target, target_source_used = _load_run_target(run_folder=run_folder, target_source=target_source)
 
-    output_path = run_folder / "viewshed"
+    # Generate 2D viewshed
+    export_grid_to_copc([target], output_path=paths["target_point_copc"])
+
+    output_path = paths["output_viewshed_copc_2d"]
     _, _, visibility_points = calculate_viewshed_2d(
         target=target,
         aoi=aoi,
@@ -145,14 +151,54 @@ def main(
         z_offset=0.3,
     )
 
+    grid_points = int(len(visibility_points))
+
     save_viewshed_as_tif(
         x_coords=visibility_points["X"],
         y_coords=visibility_points["Y"],
         visibility_values=visibility_points["Visibility"],
         aoi=aoi,
         resolution=resolution,
-        output_path=paths["output_viewshed_tif"],
+        output_path=output_path.with_suffix(".tif"),
     )
+
+    # Generate 3D viewshed
+    # Only use the shell: top surface and vertical walls
+    # Top surface (z = z_height)
+    top_points = generate_grid(aoi, resolution, z_height=z_height, two_d=True)
+    for pt in top_points:
+        pt.z = z_height
+    # Vertical walls: sample boundary at multiple heights
+    boundary_points = sample_polygon_boundary(aoi, sample_distance=resolution, z_height=0.0)
+    wall_zs = np.arange(0, z_height + resolution, resolution)
+    wall_points = [Point(pt.x, pt.y, z) for pt in boundary_points for z in wall_zs]
+    # Combine shell points
+    grid_points = top_points + wall_points
+    export_grid_to_copc(grid_points, output_path=paths["grid_shell_copc"])
+
+    # Compute 3D viewshed for shell grid points
+    chunk_size = 5
+    viewshed_output_path = paths["output_viewshed_copc_3d"]
+    calculate_viewshed_for_grid(
+        target=target,
+        grid_points=grid_points,
+        cylinder_radius=radius,
+        input_path=output_facades_path,
+        output_path=viewshed_output_path,
+        intervisibility_func=calculate_intervisibility,
+        chunk_size=chunk_size,
+    )
+
+    # Compute flight height ceiling from the 3D viewshed COPC
+    flight_height_output_path = paths["output_flight_height_tif"]
+    _, _, height_points = calculate_flight_height(
+        aoi=aoi,
+        resolution=resolution,
+        input_path=viewshed_output_path,
+        output_path=flight_height_output_path,
+    )
+
+    grid_points = int(len(height_points))
 
     _save_metadata(
         paths["metadata"],
@@ -169,26 +215,31 @@ def main(
             "target_point": {"x": target.x, "y": target.y, "z": target.z},
             "radius": radius,
             "resolution": resolution,
-            "grid_points": int(len(visibility_points)),
+            "grid_points": grid_points,
             "files": {k: str(v) for k, v in paths.items()},
         },
     )
 
+    # Remove unwanted files according to config
+    delete = config.get("remove", [])
     for key, path in paths.items():
-        if key not in config.get("save_files", []) and path.exists():
+        if key in delete and path.exists():
             path.unlink()
+
+    logger.info(f"Flight height GeoTIFF written to {flight_height_output_path}")
 
 
 if __name__ == "__main__":
-    NAME = None
+    NAME = "3d_test"
     DATASET = ["AHN6", "AHN5"]  # Options: None (defaults to newest), or list of dataset names (e.g. ["AHN6", "AHN5"])
     CLASSIFICATION_METHOD = "myria3d"  # Options: "myria3d", "rule-based"
-    RESOLUTION = 1
+    RESOLUTION = 2
     RADIUS = 0.15
     PROFILE = "testing"  # Defaults to production when unset
-    AOI_SOURCE = None  # "data/temp/aoi.geojson"  # Path("data/Groningen_plein.geojson")
-    TARGET_SOURCE = None  # Path("data/target_point.copc.laz")
+    AOI_SOURCE = Path("data/tmp/aoi.geojson")  # "data/temp/aoi.geojson"  # Path("data/Groningen_plein.geojson")
+    TARGET_SOURCE = Path("data/target_point.copc.laz")
     OVERWRITE = True
+    Z_HEIGHT = 50.0
 
     main(
         name=NAME,
@@ -200,4 +251,5 @@ if __name__ == "__main__":
         aoi_source=AOI_SOURCE,
         target_source=TARGET_SOURCE,
         overwrite=OVERWRITE,
+        z_height=Z_HEIGHT,
     )

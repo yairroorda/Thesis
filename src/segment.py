@@ -1,5 +1,4 @@
 import json
-import shutil
 import sys
 from importlib import import_module
 from pathlib import Path
@@ -178,9 +177,10 @@ if __name__ == "__main__":
     classification_method = sys.argv[2]  # Options: "myria3d", "rule-based"
     logger.info(f"Starting vegetation classification in mode: {classification_method}")
 
-    input_copc_path = Path(f"data/{name}.copc.laz")
-    rescaled_path = Path(f"data/{name}_rescaled.copc.laz")
-    output_classified_path = Path(f"data/{name}_classified.copc.laz")
+    run_folder = Path("data") / name
+    input_copc_path = run_folder / "input.copc.laz"
+    rescaled_path = run_folder / "rescaled.copc.laz"
+    output_classified_path = run_folder / "classified.copc.laz"
 
     if classification_method == "myria3d":
         rescale_ahn_colors(input_path=input_copc_path, output_path=rescaled_path)
