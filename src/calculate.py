@@ -1,7 +1,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import numpy as np
 import pdal
@@ -30,10 +30,12 @@ CLASS_VEGETATION = 5
 
 # Figuring out what to set these thresholds to is a key part of the research but we can start with this for now.
 TERRAIN_DENSITY_THRESHOLD = 14
-BUILDING_DENSITY_THRESHOLD = 14
-VEGETATION_DENSITY_THRESHOLD = 1
+BUILDING_DENSITY_THRESHOLD = 5
+VEGETATION_DENSITY_THRESHOLD = 3
 BEER_LAMBERT_COEFFICIENT = 0.05
 DEFAULT_CHUNK_SIZE = 3.0
+
+RadiusMode = Literal["fixed", "widening_linear"]
 
 
 class Point:
@@ -60,7 +62,7 @@ class Point:
         if count == 0 or not pipeline.arrays:
             raise ValueError(f"No points found in target source file: {path}")
         first = pipeline.arrays[0][0]
-        return cls(float(first["X"]), float(first["Y"]), float(first["Z"]))
+        return cls(first["X"], first["Y"], first["Z"])
 
     @classmethod
     def get_from_user(cls, title: str = "Set point") -> "Point":
@@ -73,7 +75,7 @@ class Point:
         marker = {"p": None}
 
         def on_click(coords):
-            lat_c, lon_c = float(coords[0]), float(coords[1])
+            lat_c, lon_c = coords[0], coords[1]
             x, y = _TO_RD.transform(lon_c, lat_c)
 
             if marker["p"] is not None:
@@ -127,7 +129,7 @@ class Segment:
         markers = {"p1": None, "p2": None}
 
         def on_click(coords):
-            lat_c, lon_c = float(coords[0]), float(coords[1])
+            lat_c, lon_c = coords[0], coords[1]
             x, y = _TO_RD.transform(lon_c, lat_c)
             key = mode.get()
 
@@ -172,9 +174,32 @@ class Segment:
 
 
 class Cylinder:
-    def __init__(self, segment: Segment, radius: float):
+    def __init__(
+        self,
+        segment: Segment,
+        min_radius: float,
+        max_radius: float,
+        step_length: float,
+        radius_mode: RadiusMode = "fixed",
+    ):
         self.segment = segment
-        self.radius = radius
+        self.min_radius = min_radius
+        self.max_radius = max_radius
+        self.step_length = step_length
+        self.radius_mode = radius_mode
+
+    @property
+    def radius(self) -> float:
+        return self.max_radius
+
+    def radius_at_t(self, t: np.ndarray | float) -> np.ndarray:
+        t_arr = np.asarray(t, dtype=np.float64)
+        t_clipped = np.clip(t_arr, 0.0, 1.0)
+
+        if self.radius_mode == "fixed" or self.min_radius == self.max_radius:
+            return np.full_like(t_clipped, self.max_radius, dtype=np.float64)
+
+        return self.min_radius + t_clipped * (self.max_radius - self.min_radius)
 
 
 def download_dtm_raster(aoi: AOIPolygon, buffer: float = 2.0) -> ahn.AhnRaster:
@@ -200,12 +225,12 @@ def sample_dtm(dtm_raster, points: list[Point]) -> np.ndarray:
     """
     Sample ground elevations from a DTM raster at the given (x, y) coordinates.
     """
-    mean_val = float(dtm_raster.mean(skipna=True).values)
+    mean_val = dtm_raster.mean(skipna=True).values
     ground = np.full(len(points), mean_val, dtype=np.float64)
 
     for i, point in enumerate(points):
         try:
-            val = float(dtm_raster.sel(x=point.x, y=point.y, method="nearest").values)
+            val = dtm_raster.sel(x=point.x, y=point.y, method="nearest").values
         except Exception:
             val = np.nan
 
@@ -225,7 +250,7 @@ def generate_grid(Area: AOIPolygon, resolution: int, z_height: float = 0.0, two_
     x_coords = np.arange(min_x, max_x, resolution)
     y_coords = np.arange(min_y, max_y, resolution)
     if two_d or z_height <= 0:
-        z_coords = np.array([float(z_height)], dtype=np.float64)
+        z_coords = np.array([z_height], dtype=np.float64)
     else:
         z_coords = np.arange(0, z_height, resolution)
 
@@ -261,7 +286,7 @@ def export_grid_to_copc(grid_points: list[Point], output_path: Path):
         ("Z", "f8"),
     ]
 
-    # 2. Create the structured array
+    # Create the structured array
     # If you miss the 'dtype=' argument here, point_data["X"] will fail.
     point_data = np.empty(len(grid_points), dtype=dtype)
 
@@ -274,7 +299,6 @@ def export_grid_to_copc(grid_points: list[Point], output_path: Path):
 
 def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> tuple[np.ndarray[bool], np.ndarray[float]]:
     segment = cylinder.segment
-    radius = float(cylinder.radius)
 
     p1_array = segment.point1.array_coords
 
@@ -290,6 +314,7 @@ def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> tup
     # The formula: distances_squared = |w|^2 + t^2|v|^2 - 2t(w·v)
     w_mag_sq = np.einsum("ij,ij->i", w, w)
     distances_squared = w_mag_sq + (t**2 * denom) - (2 * t * dots)
+    radius = cylinder.radius_at_t(t)
 
     # Return a boolean mask of points within the specified radius, and the projection parameters
     return distances_squared <= radius**2, t
@@ -300,9 +325,8 @@ def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndar
     Generate candidate point indices from a KD-tree within a radius of the line segment.
     """
     segment = cylinder.segment
-    radius = float(cylinder.radius)
-
-    step = radius
+    radius = cylinder.radius
+    step = cylinder.step_length
     num_samples = max(2, int(np.ceil(segment.length / step)) + 1)
     t = np.linspace(0.0, 1.0, num_samples, dtype=np.float64)
     samples = segment.point1.array_coords + t[:, None] * segment.vector
@@ -412,20 +436,21 @@ def calculate_intervisibility(
     """
 
     segment = cylinder.segment
-    radius = float(cylinder.radius)
-    cross_section_area = np.pi * radius**2
 
     # Define step bins along the segment
-    step_length = radius  # same step size used by the KD-tree sampler
+    step_length = cylinder.step_length
     num_steps = max(1, int(np.ceil(segment.length / step_length)))
 
     # Calculate how many steps fit into one chunk
     steps_per_chunk = max(1, int(np.round(chunk_size / step_length)))
-    query_radius = np.sqrt(radius**2 + (step_length**2 / 4))
 
     # Pre-compute midpoint positions for each step along the ray
     t_mids = (np.arange(num_steps) + 0.5) / num_steps
     all_step_positions = segment.point1.array_coords + t_mids[:, None] * segment.vector
+
+    # Pre-compute cross-sectional areas for each step based
+    step_radii = cylinder.radius_at_t(t_mids)
+    step_areas = np.pi * step_radii**2
 
     # Walk the LoS
     visibility = 1.0
@@ -438,6 +463,8 @@ def calculate_intervisibility(
         # Generate sample points
         t_chunk = np.linspace(start_step / num_steps, end_step / num_steps, (end_step - start_step) + 1)
         chunk_samples = segment.point1.array_coords + t_chunk[:, None] * segment.vector
+        chunk_max_radius = np.max(cylinder.radius_at_t(t_chunk))
+        query_radius = np.sqrt(chunk_max_radius**2 + (step_length**2 / 4))
 
         # Batch query the KDTree for the chunk
         candidate_lists = KDtree.query_ball_point(chunk_samples, r=query_radius)
@@ -479,6 +506,7 @@ def calculate_intervisibility(
 
             # Include the endpoint in the last bin
             current_global_step = start_step + j
+            cross_section_area = step_areas[current_global_step]
             if current_global_step == num_steps - 1:
                 in_bin |= t_values == t_hi
 
@@ -509,18 +537,36 @@ def calculate_intervisibility(
 
             step_vis[current_global_step] = visibility
 
-    visibility = float(np.clip(visibility, 0.0, 1.0))
+    visibility = np.clip(visibility, 0.0, 1.0)
     # logger.info(f"Final visibility: {visibility:.4f}")
     los_data = np.column_stack([all_step_positions, step_vis])
     return visibility, los_data
 
 
-def calculate_point_to_point(point_pair: Segment, radius: float) -> float:
-    array_points, array_coords, KDtree = load_points_for_runs([point_pair], radius)
+def calculate_point_to_point(
+    point_pair: Segment,
+    radius: float,
+    *,
+    radius_mode: RadiusMode = "fixed",
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+    step_length: float | None = None,
+) -> float:
+    if radius_mode == "fixed":
+        min_radius = radius
+        max_radius = radius
+
+    array_points, array_coords, KDtree = load_points_for_runs([point_pair], max_radius)
     if array_points is None:
         logger.warning("No points loaded for the requested point pair.")
         return 1.0  # Assume full visibility if no points are loaded
-    cylinder_of_sight = Cylinder(Segment(point_pair.point1, point_pair.point2), radius)
+    cylinder_of_sight = Cylinder(
+        segment=Segment(point_pair.point1, point_pair.point2),
+        min_radius=min_radius,
+        max_radius=max_radius,
+        step_length=step_length,
+        radius_mode=radius_mode,
+    )
     visibility, _ = calculate_intervisibility(
         cylinder_of_sight,
         array_points,
@@ -534,6 +580,10 @@ def calculate_viewshed_for_grid(
     target: Point,
     grid_points: list[Point],
     cylinder_radius: float,
+    radius_mode: RadiusMode = "fixed",
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+    step_length: float | None = None,
     input_path: Path = DEFAULT_INPUT,
     output_path: Path = DEFAULT_OUTPUT,
     intervisibility_func: Callable = calculate_intervisibility,
@@ -549,16 +599,26 @@ def calculate_viewshed_for_grid(
     grid_coords = np.array([pt.array_coords for pt in grid_points])
     max_dist = np.max(np.linalg.norm(grid_coords - target.array_coords, axis=1))
 
-    array_points, array_coords, KDtree = load_points_for_runs([dummy_pair], max_dist, input_path=input_path)
+    if radius_mode == "fixed":
+        min_radius = cylinder_radius
+        max_radius = cylinder_radius
+
+    array_points, array_coords, KDtree = load_points_for_runs([dummy_pair], max_dist + max_radius, input_path=input_path)
 
     logger.info(f"Computing visibility for {len(grid_points)} grid points.")
 
     visibility_values = np.zeros(len(grid_points), dtype=np.float64)
     all_los_chunks: list[np.ndarray] = []
 
-    for i, dest in enumerate(tqdm(grid_points, desc="Grid Viewshed", unit="pts")):
+    for i, dest in enumerate(tqdm(grid_points, desc="Grid Viewshed", unit="LoS")):
         segment = Segment(target, dest)
-        cylinder = Cylinder(segment, cylinder_radius)
+        cylinder = Cylinder(
+            segment=segment,
+            min_radius=min_radius,
+            max_radius=max_radius,
+            step_length=step_length,
+            radius_mode=radius_mode,
+        )
 
         # Calculate visibility and collect per-step LoS data
         visibility_values[i], los_data = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
@@ -595,6 +655,10 @@ def calculate_viewshed(
     target: Point,
     search_radius: float,
     cylinder_radius: float,
+    radius_mode: RadiusMode = "fixed",
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+    step_length: float | None = None,
     input_path: Path = DEFAULT_INPUT,
     output_path: Path = DEFAULT_OUTPUT,
     thinning_factor: int = 1,
@@ -625,7 +689,11 @@ def calculate_viewshed(
     # Create a dummy pair so we can reuse load_points_for_runs with search_radius
     # Code is **** ugly but it will work for now
     dummy_pair = Segment(target, target)
-    array_points, array_coords, KDtree = load_points_for_runs([dummy_pair], search_radius, input_path=input_path)
+    if radius_mode == "fixed":
+        min_radius = cylinder_radius
+        max_radius = cylinder_radius
+
+    array_points, array_coords, KDtree = load_points_for_runs([dummy_pair], search_radius + max_radius, input_path=input_path)
 
     # Select points within search_radius of the target
     target_coords = target.array_coords
@@ -648,7 +716,13 @@ def calculate_viewshed(
         dest = Point(pt_coords[0], pt_coords[1], pt_coords[2])
 
         segment = Segment(target, dest)
-        cylinder = Cylinder(segment, cylinder_radius)
+        cylinder = Cylinder(
+            segment=segment,
+            min_radius=min_radius,
+            max_radius=max_radius,
+            step_length=step_length,
+            radius_mode=radius_mode,
+        )
         visibility_values[i], _ = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
 
     # Build output array with Visibility dimension (only thinned points)
@@ -713,6 +787,11 @@ def calculate_viewshed_2d(
     output_path: Path = DEFAULT_OUTPUT,
     z_offset: float = 0.0,
     radius: float = 0.15,
+    *,
+    radius_mode: RadiusMode = "fixed",
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+    step_length: float | None = None,
 ) -> tuple[list[Point], np.ndarray, np.ndarray]:
     # Sample points along the AOI boundary at the given resolution
     boundary_points = sample_polygon_boundary(aoi, sample_distance=resolution, z_height=z_offset)
@@ -724,6 +803,10 @@ def calculate_viewshed_2d(
         target=target,
         grid_points=grid_points_nap,
         cylinder_radius=radius,
+        radius_mode=radius_mode,
+        min_radius=min_radius,
+        max_radius=max_radius,
+        step_length=step_length,
         input_path=input_path,
         output_path=output_path,
         intervisibility_func=calculate_intervisibility,

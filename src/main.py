@@ -9,7 +9,7 @@ from typing import Optional
 import numpy as np
 import tomllib
 
-from calculate import Point, calculate_flight_height, calculate_intervisibility, calculate_viewshed_2d, calculate_viewshed_for_grid, export_grid_to_copc, generate_grid, sample_polygon_boundary
+from calculate import Point, calculate_flight_height, calculate_intervisibility, calculate_viewshed_2d, calculate_viewshed_for_grid, export_grid_to_copc, generate_grid, only_save_viewable_volume, sample_polygon_boundary
 from enhance_facades import generate_facades
 from query_copc import AOIPolygon, get_pointcloud_aoi
 from segment import classify_vegetation_rule_based
@@ -88,20 +88,30 @@ def main(
     dataset: Optional[list[str]] = None,
     classification_method: str = "myria3d",
     resolution: float = 0.5,
-    radius: float = 0.15,
+    los_mode: str = "fixed",
+    los_radius: float = 0.15,
+    los_start_radius: float = 0.15,
+    los_end_radius: float = 0.15,
+    los_step_length: float = 0.10,
     profile: Optional[str] = None,
     aoi_source: Optional[Path] = None,
     overwrite: bool = False,
     target_source: Optional[Path] = None,
     z_height: float = 50.0,
 ) -> None:
+
     start_time = time.perf_counter()
     config, active_profile = load_config(profile)
     log_level = config.get("logging_level", "INFO")
 
+    if los_mode == "fixed":
+        los_start_radius = los_radius
+        los_end_radius = los_radius
+
     # Prepare isolated run folder under data
     run_name = name or "tmp"
-    run_folder = prepare_run_folder("data", run_name, overwrite=overwrite)
+    # run_folder = prepare_run_folder("data", run_name, overwrite=overwrite)
+    run_folder = Path("data") / run_name
     paths = _path_map(run_folder)
 
     global logger
@@ -110,6 +120,7 @@ def main(
     logger.debug(f"Config: {config}")
     logger.info(f"Run name: {run_name}")
     logger.info(f"Run folder: {run_folder}")
+    logger.info(f"LoS settings: mode={los_mode} radius={los_radius} min_radius={los_start_radius} max_radius={los_end_radius} step_length={los_step_length}")
 
     # AOI is stored in each run folder and reprojected to EPSG:28992 for processing.
     source_aoi_crs, aoi = _load_run_aoi(run_folder=run_folder, aoi_source=aoi_source)
@@ -144,7 +155,11 @@ def main(
     _, _, visibility_points = calculate_viewshed_2d(
         target=target,
         aoi=aoi,
-        radius=radius,
+        radius=los_radius,
+        radius_mode=los_mode,
+        min_radius=los_start_radius,
+        max_radius=los_end_radius,
+        step_length=los_step_length,
         resolution=resolution,
         input_path=output_facades_path,
         output_path=output_path,
@@ -182,7 +197,11 @@ def main(
     calculate_viewshed_for_grid(
         target=target,
         grid_points=grid_points,
-        cylinder_radius=radius,
+        cylinder_radius=los_radius,
+        radius_mode=los_mode,
+        min_radius=los_start_radius,
+        max_radius=los_end_radius,
+        step_length=los_step_length,
         input_path=output_facades_path,
         output_path=viewshed_output_path,
         intervisibility_func=calculate_intervisibility,
@@ -197,6 +216,8 @@ def main(
         input_path=viewshed_output_path,
         output_path=flight_height_output_path,
     )
+
+    logger.info(f"Flight height GeoTIFF written to {flight_height_output_path}")
 
     grid_points = int(len(height_points))
 
@@ -213,12 +234,20 @@ def main(
             "dataset": dataset,
             "target_source": target_source_used,
             "target_point": {"x": target.x, "y": target.y, "z": target.z},
-            "radius": radius,
+            "los": {
+                "mode": los_mode,
+                "radius": los_radius,
+                "min_radius": los_start_radius,
+                "max_radius": los_end_radius,
+                "step_length": los_step_length,
+            },
             "resolution": resolution,
             "grid_points": grid_points,
             "files": {k: str(v) for k, v in paths.items()},
         },
     )
+
+    only_save_viewable_volume(paths["output_viewshed_copc_3d"], paths["output_viewshed_copc_3d"].with_name("viewshed_3d_viewable_volume.copc.laz"))
 
     # Remove unwanted files according to config
     delete = config.get("remove", [])
@@ -230,26 +259,56 @@ def main(
 
 
 if __name__ == "__main__":
-    NAME = "3d_test"
-    DATASET = ["AHN6", "AHN5"]  # Options: None (defaults to newest), or list of dataset names (e.g. ["AHN6", "AHN5"])
+    NAME = "Delft_bouwkunde"
+    DATASET = ["AHN5"]  # Options: None (defaults to newest), or list of dataset names (e.g. ["AHN6", "AHN5"])
     CLASSIFICATION_METHOD = "myria3d"  # Options: "myria3d", "rule-based"
     RESOLUTION = 2
-    RADIUS = 0.15
+    LOS_MODE = "fixed"  # Options: "fixed", "widening_linear"
+    LOS_RADIUS = 0.15
+    LOS_START_RADIUS = 0.15
+    LOS_END_RADIUS = 0.15
+    LOS_STEP_LENGTH = 0.15
     PROFILE = "testing"  # Defaults to production when unset
-    AOI_SOURCE = Path("data/tmp/aoi.geojson")  # "data/temp/aoi.geojson"  # Path("data/Groningen_plein.geojson")
-    TARGET_SOURCE = Path("data/target_point.copc.laz")
+    AOI_SOURCE = Path("data/example_aoi/Delft_bouwkunde.geojson")  # Path("data/example_aoi/Groningen_plein.geojson")
+    TARGET_SOURCE = Path("data/Delft_bouwkunde/target_point_Delft.copc.laz")  # Path("data/target_point.copc.laz")
     OVERWRITE = True
     Z_HEIGHT = 50.0
+
+    # base run
 
     main(
         name=NAME,
         dataset=DATASET,
         classification_method=CLASSIFICATION_METHOD,
         resolution=RESOLUTION,
-        radius=RADIUS,
+        los_mode=LOS_MODE,
+        los_radius=LOS_RADIUS,
+        los_start_radius=LOS_START_RADIUS,
+        los_end_radius=LOS_END_RADIUS,
+        los_step_length=LOS_STEP_LENGTH,
         profile=PROFILE,
         aoi_source=AOI_SOURCE,
         target_source=TARGET_SOURCE,
         overwrite=OVERWRITE,
         z_height=Z_HEIGHT,
     )
+
+    # test multiple runs with increasing max_radius to see how it affects 2d visibility
+
+    # for LOS_END_RADIUS in [0.10, 0.20, 0.30, 0.40, 0.50, 1, 3, 10]:
+    #     main(
+    #         name=NAME + f"_maxradius_{LOS_END_RADIUS}",
+    #         dataset=DATASET,
+    #         classification_method=CLASSIFICATION_METHOD,
+    #         resolution=RESOLUTION,
+    #         los_mode=LOS_MODE,
+    #         los_radius=LOS_RADIUS,
+    #         los_start_radius=LOS_START_RADIUS,
+    #         los_end_radius=LOS_END_RADIUS,
+    #         los_step_length=LOS_STEP_LENGTH,
+    #         profile=PROFILE,
+    #         aoi_source=AOI_SOURCE,
+    #         target_source=TARGET_SOURCE,
+    #         overwrite=OVERWRITE,
+    #         z_height=Z_HEIGHT,
+    #     )
