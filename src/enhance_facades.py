@@ -229,10 +229,10 @@ def merge_and_write(input_path: Path, facade_array: np.ndarray, output_path: Pat
 def generate_facades(
     input_path: Path,
     output_path: Path,
-    point_spacing: float = 0.2,
+    point_spacing: float = 0.3,
     normal_z_threshold: float = 0.3,
-    cluster_eps: float = 1.0,
-    hull_ratio: float = 0.3,
+    cluster_eps: float = 0.5,
+    hull_ratio: float = 0.05,
 ) -> None:
     """
     Add point on building facades derived from classified roof surfaces.
@@ -297,7 +297,7 @@ def demo_generate_facades():
     input_path = Path("data/output_classified.copc.laz")
     output_path = Path("data/output_with_facades.copc.laz")
 
-    generate_facades(input_path=input_path, output_path=output_path, point_spacing=0.5, normal_z_threshold=0.3, cluster_eps=1.0, hull_ratio=0.2)
+    generate_facades(input_path=input_path, output_path=output_path, point_spacing=0.3, normal_z_threshold=0.3, cluster_eps=0.5, hull_ratio=0.05)
 
 
 if __name__ == "__main__":
