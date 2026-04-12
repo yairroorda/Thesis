@@ -25,6 +25,7 @@ rich = ">=14.3.3,<15"
 pdal-plugins = "==3.5.3"
 tkintermapview = "==1.29"
 nlmod = "==0.11.2"
+pyvista = ">=0.47.3, <0.48"
 
 [feature.thesis.tasks]
 pipeline = { cmd = "python src/main.py", description = "Run full pipeline" }
