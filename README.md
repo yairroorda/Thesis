@@ -20,7 +20,6 @@
 |       |-- myria3d/
 |       |-- configs/
 |       |-- trained_model_assets/
-|       |-- environment.yml
 |       `-- LICENSE
 |-- data/                       # Output directory with isolated run folders
 |   |-- run1/
