@@ -6,13 +6,15 @@ from typing import Callable, Literal
 import numpy as np
 import pdal
 from nlmod.read import ahn
+from pyproj import Transformer
 from scipy.spatial import cKDTree
 from shapely import contains
 from shapely import points as shapely_points
+from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon as ShapelyPolygon
 from tqdm import tqdm
 
-from gui import _TO_RD, make_map
+from gui import make_map
 from query_copc import AOIPolygon
 from utils import get_logger, timed
 from visualize import save_viewshed_as_tif
@@ -36,6 +38,17 @@ BEER_LAMBERT_COEFFICIENT = 0.05
 DEFAULT_CHUNK_SIZE = 3.0
 
 RadiusMode = Literal["fixed", "widening_linear"]
+
+_TO_RD = Transformer.from_crs("EPSG:4326", "EPSG:28992", always_xy=True)
+
+
+def _validate_points_in_aoi(points_xy: list[tuple[float, float]], aoi: AOIPolygon, labels: list[str]) -> None:
+    """Raise when any selected point lies outside the AOI polygon."""
+
+    aoi_rd = aoi.to_crs("EPSG:28992") if aoi.crs != "EPSG:28992" else aoi
+    for (x, y), label in zip(points_xy, labels):
+        if not aoi_rd.covers(ShapelyPoint(x, y)):
+            raise ValueError(f"{label} is outside the AOI. Please select a point inside the AOI.")
 
 
 class Point:
@@ -65,11 +78,11 @@ class Point:
         return cls(first["X"], first["Y"], first["Z"])
 
     @classmethod
-    def get_from_user(cls, title: str = "Set point") -> "Point":
+    def get_from_user(cls, title: str = "Set point", aoi: AOIPolygon | None = None) -> "Point":
         """Let the user pick one point on the map. Returns (x, y, z) in RD."""
         import tkinter as tk
 
-        root, map_widget, controls = make_map(title)
+        root, map_widget, controls = make_map(title, aoi=aoi)
 
         p_xy = {"v": None}
         marker = {"p": None}
@@ -98,6 +111,9 @@ class Point:
 
         root.mainloop()
 
+        if aoi is not None:
+            _validate_points_in_aoi([p_xy["v"]], aoi, labels=["Selected point"])
+
         p = (*p_xy["v"], float(pz.get()))
         root.destroy()
 
@@ -123,11 +139,11 @@ class Segment:
         self.length = np.sqrt(self.length_squared)
 
     @classmethod
-    def get_from_user(cls, title: str = "Set P1/P2") -> "Segment":
+    def get_from_user(cls, title: str = "Set P1/P2", aoi: AOIPolygon | None = None) -> "Segment":
         """Let the user pick two points on the map. Returns (p1, p2) with p1/p2 as (x, y, z) in RD."""
         import tkinter as tk
 
-        root, map_widget, controls = make_map(title)
+        root, map_widget, controls = make_map(title, aoi=aoi)
 
         mode = tk.StringVar(value="p1")
         p1_xy = {"v": None}
@@ -168,6 +184,9 @@ class Segment:
         map_widget.add_left_click_map_command(on_click)
 
         root.mainloop()
+
+        if aoi is not None:
+            _validate_points_in_aoi([p1_xy["v"], p2_xy["v"]], aoi, labels=["P1", "P2"])
 
         p1 = (*p1_xy["v"], float(p1z.get()))
         p2 = (*p2_xy["v"], float(p2z.get()))

@@ -66,7 +66,7 @@ def _save_metadata(metadata_path: Path, metadata: dict) -> None:
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
-def _load_run_target(run_folder: Path, target_source: Optional[Path] = None) -> tuple[Point, str]:
+def _load_run_target(run_folder: Path, target_source: Optional[Path] = None, aoi: Optional[AOIPolygon] = None) -> tuple[Point, str]:
     """Load target for this run and return (target_nap, source_label)."""
     run_target_path = run_folder / "target_point.copc.laz"
 
@@ -77,7 +77,10 @@ def _load_run_target(run_folder: Path, target_source: Optional[Path] = None) -> 
         return Point.get_from_file(run_target_path), str(target_source)
 
     # Same behavior as AOI source fallback: prompt user and persist in run folder.
-    target = Point.get_from_user("Select target point for viewshed analysis")
+    target = Point.get_from_user(
+        "Select target point for viewshed analysis",
+        aoi=aoi,
+    )
     export_grid_to_copc([target], output_path=run_target_path)
     return target, "user"
 
@@ -146,7 +149,7 @@ def main(
     output_facades_path = paths["facades_copc"]
     generate_facades(output_classified_path, output_facades_path)
 
-    target, target_source_used = _load_run_target(run_folder=run_folder, target_source=target_source)
+    target, target_source_used = _load_run_target(run_folder=run_folder, target_source=target_source, aoi=aoi)
 
     # Generate 2D viewshed
     export_grid_to_copc([target], output_path=paths["target_point_copc"])

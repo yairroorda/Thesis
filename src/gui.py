@@ -1,18 +1,14 @@
 import importlib
 import tkinter as tk
 
-from pyproj import Transformer
-
 tkintermapview = importlib.import_module("tkintermapview")
-_TO_RD = Transformer.from_crs("EPSG:4326", "EPSG:28992", always_xy=True)
-_TO_LONLAT = Transformer.from_crs("EPSG:28992", "EPSG:4326", always_xy=True)
 
-# Default centre (Groningen) in RD
-_START_X, _START_Y = 233974.5, 582114.2
-_START_LON, _START_LAT = _TO_LONLAT.transform(_START_X, _START_Y)
+# Default centre
+_START_LAT, _START_LON = 52.005818, 4.370221  # Delft
+_ZOOM = 18
 
 
-def make_map(title):
+def make_map(title, aoi=None):
     """Create a tkinter window with a map widget and a side panel."""
     root = tk.Tk()
     root.title(title)
@@ -24,8 +20,18 @@ def make_map(title):
     controls = tk.Frame(root, padx=10, pady=10)
     controls.pack(side=tk.RIGHT, fill=tk.Y)
 
-    map_widget.set_position(float(_START_LAT), float(_START_LON))
-    map_widget.set_zoom(13)
+    lat, lon = _START_LAT, _START_LON
+    if aoi is not None:
+        aoi_wgs84 = aoi.to_crs("EPSG:4326") if aoi.crs != "EPSG:4326" else aoi
+        centroid = aoi_wgs84.centroid
+        lat, lon = float(centroid.y), float(centroid.x)
+
+        outline_latlon = [(float(y), float(x)) for x, y in aoi_wgs84.exterior.coords]
+        if len(outline_latlon) >= 2:
+            map_widget.set_path(outline_latlon, color="red", width=3)
+
+    map_widget.set_position(float(lat), float(lon))
+    map_widget.set_zoom(_ZOOM)
 
     return root, map_widget, controls
 
@@ -39,9 +45,9 @@ def main():
 
     polygon = AOIPolygon.get_from_user("Test polygon input")
     logger.info(f"Collected polygon: {polygon}")
-    points = Segment.get_from_user("Test points input")
+    points = Segment.get_from_user("Test segment input", aoi=polygon)
     logger.info(f"Collected points: SEGMENT(POINT({points.point1.x}, {points.point1.y}, {points.point1.z}), POINT({points.point2.x}, {points.point2.y}, {points.point2.z}))")
-    point = Point.get_from_user("Test point input")
+    point = Point.get_from_user("Test point input", aoi=polygon)
     logger.info(f"Collected point: POINT({point.x}, {point.y}, {point.z})")
 
 
