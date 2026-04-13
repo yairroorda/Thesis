@@ -104,6 +104,12 @@ class Point:
         pt = cls(*p)
         return hag_to_nap([pt])[0] if is_hag.get() else pt
 
+    def save_to_file(self, path: Path) -> None:
+        """Save this point to a COPC/LAZ file for later retrieval."""
+        dtype = [("X", "f8"), ("Y", "f8"), ("Z", "f8")]
+        point_data = np.array([(self.x, self.y, self.z)], dtype=dtype)
+        write_to_copc(point_data, path)
+
 
 class Segment:
     def __init__(self, point1: Point, point2: Point):
