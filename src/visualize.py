@@ -171,6 +171,6 @@ if __name__ == "__main__":
         aoi=AOIPolygon.get_from_file(Path("data/Delft_bouwkunde/aoi.geojson")),
         resolution=2.0,
         file_type="copc",
-        output_path=Path("data/Delft_bouwkunde/viewshed_3d_voxel.copc"),
+        output_path=Path("data/Delft_bouwkunde/viewshed_3d_voxel.copc.laz"),
         input_crs="EPSG:28992",
     )
