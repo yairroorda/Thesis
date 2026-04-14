@@ -51,6 +51,11 @@ class RunConfig:
     z_height: float = 50.0
     target_source: Path | None = None
 
+    def __post_init__(self):
+        if self.los_mode == "fixed":
+            self.los_start_radius = self.los_radius
+            self.los_end_radius = self.los_radius
+
 
 class ProjectPaths:
     def __init__(self, project_name: str, base_dir: Path = Path("data")):
@@ -67,13 +72,7 @@ class ProjectPaths:
         self.classified_copc = self.folder / "classified.copc.laz"
         self.facades_copc = self.folder / "facades.copc.laz"
         self.project_log = self.folder / "project.log"
-
-    @property
-    def is_prepared(self) -> bool:
-        return self.facades_copc.exists()
-
-    def key_map(self) -> dict[str, Path]:
-        return {
+        self.file_map = {
             "aoi": self.aoi,
             "input_copc": self.input_copc,
             "rescaled_copc": self.rescaled_copc,
@@ -81,6 +80,10 @@ class ProjectPaths:
             "facades_copc": self.facades_copc,
             "project_log": self.project_log,
         }
+
+    @property
+    def is_prepared(self) -> bool:
+        return self.facades_copc.exists()
 
 
 class RunPaths:
@@ -98,9 +101,7 @@ class RunPaths:
         self.output_viewshed_copc_3d = self.folder / "viewshed_3d.copc.laz"
         self.output_flight_height_tif = self.folder / "flight_height.tif"
         self.viewable_volume_copc = self.folder / "viewshed_3d_viewable_volume.copc.laz"
-
-    def key_map(self) -> dict[str, Path]:
-        return {
+        self.file_map = {
             "run_log": self.run_log,
             "metadata": self.metadata,
             "target_point_copc": self.target_point_copc,
@@ -149,18 +150,36 @@ def _load_or_create_target(target_path: Path, target_source: Path | None, aoi: A
 
     target = Point.get_from_user("Select target point for viewshed analysis", aoi=aoi)
     export_grid_to_copc([target], output_path=target_path)
-    return target, "user"
+    return target
 
 
-def _cleanup_outputs(remove_keys: list[str], *path_maps: dict[str, Path]) -> None:
-    merged: dict[str, Path] = {}
-    for path_map in path_maps:
-        merged.update(path_map)
-
-    for key in remove_keys:
-        path = merged.get(key)
-        if path and path.exists() and path.is_file():
-            path.unlink()
+def _write_metadata(run_cfg: RunConfig, project_paths: ProjectPaths, run_paths: RunPaths, active_profile: str, source_aoi_crs: str, start_time: float) -> None:
+    metadata = {
+        "project": {
+            "name": project_paths.name,
+            "folder": str(project_paths.folder),
+            "profile": active_profile,
+            "aoi_source_crs": source_aoi_crs,
+            "processing_crs": "EPSG:28992",
+            "classification_method": "cached",
+        },
+        "run": {
+            "name": run_cfg.name,
+            "folder": str(run_paths.folder),
+            "runtime_seconds": round(time.perf_counter() - start_time, 3),
+            "resolution": run_cfg.resolution,
+            "z_height": run_cfg.z_height,
+            "los": {
+                "mode": run_cfg.los_mode,
+                "radius": run_cfg.los_radius,
+                "min_radius": run_cfg.los_start_radius,
+                "max_radius": run_cfg.los_end_radius,
+                "step_length": run_cfg.los_step_length,
+            },
+            "files": {**{k: str(v) for k, v in project_paths.file_map.items()}, **{k: str(v) for k, v in run_paths.file_map.items()}},
+        },
+    }
+    run_paths.metadata.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
 @timed("Prepare project")
@@ -211,13 +230,12 @@ def prepare_project(config: ProjectConfig) -> ProjectPaths:
         logger.warning("Facade generation produced no output. Falling back to classified cloud.")
         shutil.copy2(paths.classified_copc, paths.facades_copc)
 
-    _cleanup_outputs(profile_cfg.get("remove", []), paths.key_map())
     logger.info("Project preprocessing complete")
     return paths
 
 
-@timed("Run viewshed")
-def calculate_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profile: str = "testing") -> RunPaths:
+@timed("Run 2D viewshed")
+def calculate_2d_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profile: str = "testing") -> RunPaths:
     profile_cfg, active_profile = load_profile(profile)
     run_paths = RunPaths(project_paths, run_cfg.name)
 
@@ -226,20 +244,12 @@ def calculate_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profile:
     source_aoi_crs = AOIPolygon.get_from_file(project_paths.aoi).crs
     aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs("EPSG:28992")
 
-    if run_cfg.los_mode == "fixed":
-        run_cfg.los_start_radius = run_cfg.los_radius
-        run_cfg.los_end_radius = run_cfg.los_radius
-
     run_logger.info(f"Running viewshed '{run_cfg.name}' in project '{project_paths.name}'")
     run_logger.info(f"LoS settings: mode={run_cfg.los_mode} radius={run_cfg.los_radius} min_radius={run_cfg.los_start_radius} max_radius={run_cfg.los_end_radius} step_length={run_cfg.los_step_length}")
 
     start_time = time.perf_counter()
 
-    target, target_source_used = _load_or_create_target(
-        target_path=run_paths.target_point_copc,
-        target_source=run_cfg.target_source,
-        aoi=aoi,
-    )
+    target = _load_or_create_target(target_path=run_paths.target_point_copc, target_source=run_cfg.target_source, aoi=aoi)
 
     viewshed_2d_path = run_paths.output_viewshed_copc_2d
     _, _, visibility_points = calculate_viewshed_2d(
@@ -265,6 +275,29 @@ def calculate_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profile:
         output_path=viewshed_tif,
     )
 
+    _write_metadata(run_cfg, project_paths, run_paths, active_profile, source_aoi_crs, start_time)
+
+    run_logger.info("Run completed")
+    return run_paths
+
+
+@timed("Run viewshed")
+def calculate_3d_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profile: str = "testing") -> RunPaths:
+    profile_cfg, active_profile = load_profile(profile)
+    run_paths = RunPaths(project_paths, run_cfg.name)
+
+    run_logger = get_logger(name="Main", logfile_path=run_paths.run_log, level=profile_cfg.get("logging_level", "INFO"))
+
+    source_aoi_crs = AOIPolygon.get_from_file(project_paths.aoi).crs
+    aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs("EPSG:28992")
+
+    run_logger.info(f"Running viewshed '{run_cfg.name}' in project '{project_paths.name}'")
+    run_logger.info(f"LoS settings: mode={run_cfg.los_mode} radius={run_cfg.los_radius} min_radius={run_cfg.los_start_radius} max_radius={run_cfg.los_end_radius} step_length={run_cfg.los_step_length}")
+
+    start_time = time.perf_counter()
+
+    target = _load_or_create_target(target_path=run_paths.target_point_copc, target_source=run_cfg.target_source, aoi=aoi)
+
     top_points = generate_grid(aoi, run_cfg.resolution, z_height=run_cfg.z_height, two_d=True)
     for pt in top_points:
         pt.z = run_cfg.z_height
@@ -289,48 +322,52 @@ def calculate_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profile:
         chunk_size=5,
     )
 
-    _, _, height_points = calculate_flight_height(
+    only_save_viewable_volume(run_paths.output_viewshed_copc_3d, run_paths.viewable_volume_copc)
+
+    _write_metadata(run_cfg, project_paths, run_paths, active_profile, source_aoi_crs, start_time)
+
+    run_logger.info("Run completed")
+    return run_paths
+
+
+def calculate_3d_flight_height(project_paths: ProjectPaths, run_cfg: RunConfig, profile: str = "testing") -> RunPaths:
+
+    profile_cfg, active_profile = load_profile(profile)
+    run_paths = RunPaths(project_paths, run_cfg.name)
+
+    run_logger = get_logger(name="Main", logfile_path=run_paths.run_log, level=profile_cfg.get("logging_level", "INFO"))
+
+    source_aoi_crs = AOIPolygon.get_from_file(project_paths.aoi).crs
+    aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs("EPSG:28992")
+
+    run_logger.info(f"Running viewshed '{run_cfg.name}' in project '{project_paths.name}'")
+    run_logger.info(f"LoS settings: mode={run_cfg.los_mode} radius={run_cfg.los_radius} min_radius={run_cfg.los_start_radius} max_radius={run_cfg.los_end_radius} step_length={run_cfg.los_step_length}")
+
+    start_time = time.perf_counter()
+
+    calculate_flight_height(
         aoi=aoi,
         resolution=run_cfg.resolution,
         input_path=run_paths.output_viewshed_copc_3d,
         output_path=run_paths.output_flight_height_tif,
     )
 
-    only_save_viewable_volume(run_paths.output_viewshed_copc_3d, run_paths.viewable_volume_copc)
+    _write_metadata(run_cfg, project_paths, run_paths, active_profile, source_aoi_crs, start_time)
 
-    metadata = {
-        "project": {
-            "name": project_paths.name,
-            "folder": str(project_paths.folder),
-            "profile": active_profile,
-            "aoi_source_crs": source_aoi_crs,
-            "processing_crs": "EPSG:28992",
-            "classification_method": "cached",
-        },
-        "run": {
-            "name": run_cfg.name,
-            "folder": str(run_paths.folder),
-            "runtime_seconds": round(time.perf_counter() - start_time, 3),
-            "resolution": run_cfg.resolution,
-            "z_height": run_cfg.z_height,
-            "los": {
-                "mode": run_cfg.los_mode,
-                "radius": run_cfg.los_radius,
-                "min_radius": run_cfg.los_start_radius,
-                "max_radius": run_cfg.los_end_radius,
-                "step_length": run_cfg.los_step_length,
-            },
-            "target_source": target_source_used,
-            "target_point": {"x": target.x, "y": target.y, "z": target.z},
-            "grid_points": int(len(height_points)),
-            "files": {**{k: str(v) for k, v in project_paths.key_map().items()}, **{k: str(v) for k, v in run_paths.key_map().items()}},
-        },
-    }
-    run_paths.metadata.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-
-    _cleanup_outputs(profile_cfg.get("remove", []), project_paths.key_map(), run_paths.key_map())
-    run_logger.info(f"Run completed: {run_paths.folder}")
+    run_logger.info("Run completed")
     return run_paths
+
+
+def remove_intermediate_files(project_paths: ProjectPaths, run_paths: RunPaths, profile: str = "testing") -> None:
+    profile_cfg, _ = load_profile(profile)
+
+    files_to_remove = profile_cfg.get("remove", [])
+    merged_file_map = {**project_paths.file_map, **run_paths.file_map}
+    for file_key in files_to_remove:
+        file_path = merged_file_map.get(file_key)
+        if file_path and file_path.exists():
+            logger.info(f"Removing intermediate file: {file_path}")
+            file_path.unlink()
 
 
 if __name__ == "__main__":
@@ -346,8 +383,11 @@ if __name__ == "__main__":
         overwrite=False,
     )
 
-    project = prepare_project(project_cfg)
+    project_paths = prepare_project(project_cfg)
 
     run_config = RunConfig(name="refactor_test_run_2", resolution=1.0, los_mode="fixed", los_radius=0.15, z_height=20.0)
 
-    calculate_viewshed(project, run_config, profile=project_cfg.profile)
+    run_paths = calculate_2d_viewshed(project_paths, run_config, profile=project_cfg.profile)
+    run_paths = calculate_3d_viewshed(project_paths, run_config, profile=project_cfg.profile)
+    run_paths = calculate_3d_flight_height(project_paths, run_config, profile=project_cfg.profile)
+    remove_intermediate_files(project_paths=project_paths, run_paths=run_paths, profile=project_cfg.profile)
