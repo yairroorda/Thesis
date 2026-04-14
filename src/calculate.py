@@ -120,11 +120,11 @@ class Point:
         pt = cls(*p)
         return hag_to_nap([pt])[0] if is_hag.get() else pt
 
-    def save_to_file(self, path: Path) -> None:
+    def save_to_file(self, path: Path, crs: str = "EPSG:28992") -> None:
         """Save this point to a COPC/LAZ file for later retrieval."""
         dtype = [("X", "f8"), ("Y", "f8"), ("Z", "f8")]
         point_data = np.array([(self.x, self.y, self.z)], dtype=dtype)
-        write_to_copc(point_data, path)
+        write_to_copc(point_data, path, crs=crs)
 
 
 class Segment:
@@ -300,7 +300,7 @@ def sample_polygon_boundary(polygon: AOIPolygon, sample_distance: float, z_heigh
     return [Point(boundary.interpolate(d).x, boundary.interpolate(d).y, z_height) for d in distances]
 
 
-def export_grid_to_copc(grid_points: list[Point], output_path: Path):
+def export_grid_to_copc(grid_points: list[Point], output_path: Path, crs: str = "EPSG:28992"):
     """
     Exports the generated 3D grid to a COPC (.copc.laz) file for CloudCompare.
     """
@@ -319,7 +319,7 @@ def export_grid_to_copc(grid_points: list[Point], output_path: Path):
     point_data["Y"] = np.array([pt.y for pt in grid_points])
     point_data["Z"] = np.array([pt.z for pt in grid_points])
 
-    write_to_copc(point_data, output_path)
+    write_to_copc(point_data, output_path, crs=crs)
 
 
 def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> tuple[np.ndarray[bool], np.ndarray[float]]:
@@ -378,12 +378,13 @@ def get_PDAL_bounds_for_runs(point_pairs: list[Segment], radius: float) -> str:
     return f"([{minx},{maxx}],[{miny},{maxy}],[{minz},{maxz}])"
 
 
-def write_to_copc(points_in_cylinder: np.ndarray, output_path: Path):
+def write_to_copc(points_in_cylinder: np.ndarray, output_path: Path, crs: str = "EPSG:28992"):
     write_pipeline = {
         "pipeline": [
             {
                 "type": "writers.copc",
                 "filename": str(output_path),
+                "a_srs": crs,
                 "forward": "all",
                 "extra_dims": "all",
             }
