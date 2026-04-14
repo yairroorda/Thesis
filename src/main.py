@@ -3,315 +3,351 @@ import os
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import tomllib
 
-from calculate import Point, calculate_flight_height, calculate_intervisibility, calculate_viewshed_2d, calculate_viewshed_for_grid, export_grid_to_copc, generate_grid, only_save_viewable_volume, sample_polygon_boundary
+from calculate import (
+    Point,
+    calculate_flight_height,
+    calculate_intervisibility,
+    calculate_viewshed_2d,
+    calculate_viewshed_for_grid,
+    export_grid_to_copc,
+    generate_grid,
+    only_save_viewable_volume,
+    sample_polygon_boundary,
+)
 from enhance_facades import generate_facades
 from query_copc import AOIPolygon, get_pointcloud_aoi
 from segment import classify_vegetation_rule_based
-from utils import get_logger, prepare_run_folder, timed
+from utils import get_logger, timed
 from visualize import save_viewshed_as_tif
 
+logger = get_logger(name="Main")
 
-def load_config(profile: Optional[str] = None):
+
+@dataclass
+class ProjectConfig:
+    name: str = "test_project"
+    dataset: list[str] = field(default_factory=lambda: ["AHN6", "AHN5"])
+    classification_method: str = "myria3d"
+    profile: str = "testing"
+    aoi_source: Path | None = None
+    overwrite: bool = False
+
+
+@dataclass
+class RunConfig:
+    name: str = "test_run"
+    resolution: float = 2.0
+    los_mode: str = "fixed"
+    los_radius: float = 0.15
+    los_start_radius: float = 0.15
+    los_end_radius: float = 0.15
+    los_step_length: float = 0.15
+    z_height: float = 50.0
+    target_source: Path | None = None
+
+
+class ProjectPaths:
+    def __init__(self, project_name: str, base_dir: Path = Path("data")):
+        self.name = project_name
+        self.folder = base_dir / project_name
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+        self.runs_folder = self.folder / "runs"
+        self.runs_folder.mkdir(parents=True, exist_ok=True)
+
+        self.aoi = self.folder / "aoi.geojson"
+        self.input_copc = self.folder / "input.copc.laz"
+        self.rescaled_copc = self.folder / "rescaled.copc.laz"
+        self.classified_copc = self.folder / "classified.copc.laz"
+        self.facades_copc = self.folder / "facades.copc.laz"
+        self.project_log = self.folder / "project.log"
+
+    @property
+    def is_prepared(self) -> bool:
+        return self.facades_copc.exists()
+
+    def key_map(self) -> dict[str, Path]:
+        return {
+            "aoi": self.aoi,
+            "input_copc": self.input_copc,
+            "rescaled_copc": self.rescaled_copc,
+            "classified_copc": self.classified_copc,
+            "facades_copc": self.facades_copc,
+            "project_log": self.project_log,
+        }
+
+
+class RunPaths:
+    def __init__(self, project_paths: ProjectPaths, run_name: str):
+        self.project = project_paths
+        self.name = run_name
+        self.folder = project_paths.runs_folder / run_name
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+        self.run_log = self.folder / "run.log"
+        self.metadata = self.folder / "metadata.json"
+        self.target_point_copc = self.folder / "target_point.copc.laz"
+        self.output_viewshed_copc_2d = self.folder / "viewshed_2d.copc.laz"
+        self.grid_shell_copc = self.folder / "grid_points_3d_shell.copc.laz"
+        self.output_viewshed_copc_3d = self.folder / "viewshed_3d.copc.laz"
+        self.output_flight_height_tif = self.folder / "flight_height.tif"
+        self.viewable_volume_copc = self.folder / "viewshed_3d_viewable_volume.copc.laz"
+
+    def key_map(self) -> dict[str, Path]:
+        return {
+            "run_log": self.run_log,
+            "metadata": self.metadata,
+            "target_point_copc": self.target_point_copc,
+            "grid_shell_copc": self.grid_shell_copc,
+            "output_viewshed_copc_2d": self.output_viewshed_copc_2d,
+            "output_viewshed_copc_3d": self.output_viewshed_copc_3d,
+            "output_flight_height_tif": self.output_flight_height_tif,
+            "viewable_volume_copc": self.viewable_volume_copc,
+        }
+
+
+def load_profile(profile: str | None = None) -> tuple[dict, str]:
     config_path = Path(__file__).parent.parent / "config.toml"
     with open(config_path, "rb") as f:
         config = tomllib.load(f)
-    profile = profile or os.environ.get("THESIS_PROFILE") or "production"
-    if profile not in config:
-        raise ValueError(f"Profile '{profile}' not found in config.toml")
-    return config[profile], profile
+    active_profile = profile or os.environ.get("THESIS_PROFILE") or "production"
+    if active_profile not in config:
+        raise ValueError(f"Profile '{active_profile}' not found in config.toml")
+    return config[active_profile], active_profile
 
 
-def _path_map(run_folder: Path) -> dict[str, Path]:
-    return {
-        "input_copc": run_folder / "input.copc.laz",
-        "classified_copc": run_folder / "classified.copc.laz",
-        "rescaled_copc": run_folder / "rescaled.copc.laz",
-        "facades_copc": run_folder / "facades.copc.laz",
-        "target_point_copc": run_folder / "target_point.copc.laz",
-        "grid_shell_copc": run_folder / "grid_points_3d_shell.copc.laz",
-        "output_viewshed_copc_2d": run_folder / "viewshed_2d.copc.laz",
-        "output_viewshed_copc_3d": run_folder / "viewshed_3d.copc.laz",
-        "output_viewshed_tif": run_folder / "viewshed.tif",
-        "output_flight_height_tif": run_folder / "flight_height.tif",
-        "aoi_geojson": run_folder / "aoi.geojson",
-        "metadata": run_folder / "metadata.json",
-        "log": run_folder / "run.log",
-    }
-
-
-def _load_run_aoi(run_folder: Path, aoi_source: Optional[Path] = None) -> tuple[str, AOIPolygon]:
-    """Load AOI for this run and return source CRS and AOI reprojected to EPSG:28992."""
-    run_aoi_path = run_folder / "aoi.geojson"
-
+def _load_or_create_project_aoi(paths: ProjectPaths, aoi_source: Path | None = None) -> tuple[str, AOIPolygon]:
+    """Load AOI for the project and return source CRS and AOI in EPSG:28992."""
     if aoi_source:
         if not aoi_source.exists():
             raise FileNotFoundError(f"aoi_source does not exist: {aoi_source}")
-        shutil.copy2(aoi_source, run_aoi_path)
-    elif not run_aoi_path.exists():
-        aoi_user = AOIPolygon.get_from_user()
-        aoi_user.save_to_file(run_aoi_path, crs="EPSG:4326")
+        shutil.copy2(aoi_source, paths.aoi)
+    elif not paths.aoi.exists():
+        aoi_user = AOIPolygon.get_from_user(title=f"Draw AOI for project {paths.name}")
+        aoi_user.save_to_file(paths.aoi, crs="EPSG:4326")
 
-    aoi_loaded = AOIPolygon.get_from_file(run_aoi_path)
+    aoi_loaded = AOIPolygon.get_from_file(paths.aoi)
     return aoi_loaded.crs, aoi_loaded.to_crs("EPSG:28992")
 
 
-def _save_metadata(metadata_path: Path, metadata: dict) -> None:
-    """Save metadata to JSON."""
-    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-
-
-def _load_run_target(run_folder: Path, target_source: Optional[Path] = None, aoi: Optional[AOIPolygon] = None) -> tuple[Point, str]:
-    """Load target for this run and return (target_nap, source_label)."""
-    run_target_path = run_folder / "target_point.copc.laz"
-
+def _load_or_create_target(target_path: Path, target_source: Path | None, aoi: AOIPolygon) -> tuple[Point, str]:
     if target_source:
         if not target_source.exists():
             raise FileNotFoundError(f"target_source does not exist: {target_source}")
-        shutil.copy2(target_source, run_target_path)
-        return Point.get_from_file(run_target_path), str(target_source)
+        if not target_path.exists():
+            shutil.copy2(target_source, target_path)
+        return Point.get_from_file(target_path), str(target_source)
 
-    # Same behavior as AOI source fallback: prompt user and persist in run folder.
-    target = Point.get_from_user(
-        "Select target point for viewshed analysis",
-        aoi=aoi,
-    )
-    export_grid_to_copc([target], output_path=run_target_path)
+    if target_path.exists():
+        return Point.get_from_file(target_path), str(target_path)
+
+    target = Point.get_from_user("Select target point for viewshed analysis", aoi=aoi)
+    export_grid_to_copc([target], output_path=target_path)
     return target, "user"
 
 
-@timed("Total processing")
-def main(
-    name: str = "test",
-    dataset: Optional[list[str]] = None,
-    classification_method: str = "myria3d",
-    resolution: float = 0.5,
-    los_mode: str = "fixed",
-    los_radius: float = 0.15,
-    los_start_radius: float = 0.15,
-    los_end_radius: float = 0.15,
-    los_step_length: float = 0.10,
-    profile: Optional[str] = None,
-    aoi_source: Optional[Path] = None,
-    overwrite: bool = False,
-    target_source: Optional[Path] = None,
-    z_height: float = 50.0,
-) -> None:
+def _cleanup_outputs(remove_keys: list[str], *path_maps: dict[str, Path]) -> None:
+    merged: dict[str, Path] = {}
+    for path_map in path_maps:
+        merged.update(path_map)
 
-    start_time = time.perf_counter()
-    config, active_profile = load_config(profile)
-    log_level = config.get("logging_level", "INFO")
+    for key in remove_keys:
+        path = merged.get(key)
+        if path and path.exists() and path.is_file():
+            path.unlink()
 
-    if los_mode == "fixed":
-        los_start_radius = los_radius
-        los_end_radius = los_radius
 
-    # Prepare isolated run folder under data
-    run_name = name or "tmp"
-    # run_folder = prepare_run_folder("data", run_name, overwrite=overwrite)
-    run_folder = Path("data") / run_name
-    paths = _path_map(run_folder)
+@timed("Prepare project")
+def prepare_project(config: ProjectConfig) -> ProjectPaths:
+    profile_cfg, active_profile = load_profile(config.profile)
+    paths = ProjectPaths(config.name)
 
+    log_level = profile_cfg.get("logging_level", "INFO")
     global logger
-    logger = get_logger(name="Main", logfile_path=paths["log"], level=log_level)
+    logger = get_logger(name="Main", logfile_path=paths.project_log, level=log_level)
+
     logger.info(f"Using config profile: {active_profile}")
-    logger.debug(f"Config: {config}")
-    logger.info(f"Run name: {run_name}")
-    logger.info(f"Run folder: {run_folder}")
-    logger.info(f"LoS settings: mode={los_mode} radius={los_radius} min_radius={los_start_radius} max_radius={los_end_radius} step_length={los_step_length}")
+    logger.debug(f"Config: {profile_cfg}")
+    logger.info(f"Project: {config.name}")
+    logger.info(f"Project folder: {paths.folder}")
 
-    # AOI is stored in each run folder and reprojected to EPSG:28992 for processing.
-    source_aoi_crs, aoi = _load_run_aoi(run_folder=run_folder, aoi_source=aoi_source)
+    if config.overwrite:
+        for artifact in [paths.input_copc, paths.rescaled_copc, paths.classified_copc, paths.facades_copc]:
+            if artifact.exists():
+                artifact.unlink()
 
-    output_copc_path = paths["input_copc"]
-    get_pointcloud_aoi(aoi, aoi_crs="EPSG:28992", include=dataset, output_path=output_copc_path)
+    source_aoi_crs, aoi = _load_or_create_project_aoi(paths=paths, aoi_source=config.aoi_source)
+    logger.info(f"Project AOI ready (source CRS: {source_aoi_crs}, processing CRS: EPSG:28992)")
 
-    # Classify vegetation
-    output_classified_path = paths["classified_copc"]
-    if classification_method == "myria3d":
-        logger.info("Delegating vegetation classification to Myria3D Pixi environment")
-        result = subprocess.run(f"pixi run -e myria3d python src/segment.py {run_name} {classification_method}", shell=True)
+    if paths.is_prepared:
+        logger.info(f"Project {config.name} is already prepared. Reusing cached preprocessing outputs.")
+        return paths
+
+    logger.info("Downloading project point cloud for AOI")
+    get_pointcloud_aoi(aoi, aoi_crs="EPSG:28992", include=config.dataset, output_path=paths.input_copc)
+
+    logger.info(f"Classifying vegetation using method: {config.classification_method}")
+    if config.classification_method == "myria3d":
+        result = subprocess.run(
+            ["pixi", "run", "-e", "myria3d", "python", "src/segment.py", paths.name, config.classification_method],
+            check=False,
+        )
         if result.returncode != 0:
             raise RuntimeError(f"Myria3D classification failed with exit code {result.returncode}.")
-
-    elif classification_method == "rule-based":
-        classify_vegetation_rule_based(output_copc_path, output_classified_path)
-
+    elif config.classification_method == "rule-based":
+        classify_vegetation_rule_based(paths.input_copc, paths.classified_copc)
     else:
-        raise ValueError(f"Unknown classification method: {classification_method}")
+        raise ValueError(f"Unknown classification method: {config.classification_method}")
 
-    # Generate building facades from roof edges
-    output_facades_path = paths["facades_copc"]
-    generate_facades(output_classified_path, output_facades_path)
+    logger.info("Generating facade-enhanced point cloud")
+    generate_facades(paths.classified_copc, paths.facades_copc)
+    if not paths.facades_copc.exists():
+        logger.warning("Facade generation produced no output. Falling back to classified cloud.")
+        shutil.copy2(paths.classified_copc, paths.facades_copc)
 
-    target, target_source_used = _load_run_target(run_folder=run_folder, target_source=target_source, aoi=aoi)
+    _cleanup_outputs(profile_cfg.get("remove", []), paths.key_map())
+    logger.info("Project preprocessing complete")
+    return paths
 
-    # Generate 2D viewshed
-    export_grid_to_copc([target], output_path=paths["target_point_copc"])
 
-    output_path = paths["output_viewshed_copc_2d"]
+@timed("Run viewshed")
+def calculate_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profile: str = "testing") -> RunPaths:
+    profile_cfg, active_profile = load_profile(profile)
+    run_paths = RunPaths(project_paths, run_cfg.name)
+
+    run_logger = get_logger(name="Main", logfile_path=run_paths.run_log, level=profile_cfg.get("logging_level", "INFO"))
+
+    source_aoi_crs = AOIPolygon.get_from_file(project_paths.aoi).crs
+    aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs("EPSG:28992")
+
+    if run_cfg.los_mode == "fixed":
+        run_cfg.los_start_radius = run_cfg.los_radius
+        run_cfg.los_end_radius = run_cfg.los_radius
+
+    run_logger.info(f"Running viewshed '{run_cfg.name}' in project '{project_paths.name}'")
+    run_logger.info(f"LoS settings: mode={run_cfg.los_mode} radius={run_cfg.los_radius} min_radius={run_cfg.los_start_radius} max_radius={run_cfg.los_end_radius} step_length={run_cfg.los_step_length}")
+
+    start_time = time.perf_counter()
+
+    target, target_source_used = _load_or_create_target(
+        target_path=run_paths.target_point_copc,
+        target_source=run_cfg.target_source,
+        aoi=aoi,
+    )
+
+    viewshed_2d_path = run_paths.output_viewshed_copc_2d
     _, _, visibility_points = calculate_viewshed_2d(
         target=target,
         aoi=aoi,
-        radius=los_radius,
-        radius_mode=los_mode,
-        min_radius=los_start_radius,
-        max_radius=los_end_radius,
-        step_length=los_step_length,
-        resolution=resolution,
-        input_path=output_facades_path,
-        output_path=output_path,
+        radius=run_cfg.los_radius,
+        radius_mode=run_cfg.los_mode,
+        min_radius=run_cfg.los_start_radius,
+        max_radius=run_cfg.los_end_radius,
+        step_length=run_cfg.los_step_length,
+        resolution=run_cfg.resolution,
+        input_path=project_paths.facades_copc,
+        output_path=viewshed_2d_path,
         z_offset=0.3,
     )
-
-    grid_points = int(len(visibility_points))
-
+    viewshed_tif = viewshed_2d_path.with_suffix(".tif")
     save_viewshed_as_tif(
         x_coords=visibility_points["X"],
         y_coords=visibility_points["Y"],
         visibility_values=visibility_points["Visibility"],
         aoi=aoi,
-        resolution=resolution,
-        output_path=output_path.with_suffix(".tif"),
+        resolution=run_cfg.resolution,
+        output_path=viewshed_tif,
     )
 
-    # Generate 3D viewshed
-    # Only use the shell: top surface and vertical walls
-    # Top surface (z = z_height)
-    top_points = generate_grid(aoi, resolution, z_height=z_height, two_d=True)
+    top_points = generate_grid(aoi, run_cfg.resolution, z_height=run_cfg.z_height, two_d=True)
     for pt in top_points:
-        pt.z = z_height
-    # Vertical walls: sample boundary at multiple heights
-    boundary_points = sample_polygon_boundary(aoi, sample_distance=resolution, z_height=0.0)
-    wall_zs = np.arange(0, z_height + resolution, resolution)
-    wall_points = [Point(pt.x, pt.y, z) for pt in boundary_points for z in wall_zs]
-    # Combine shell points
-    grid_points = top_points + wall_points
-    export_grid_to_copc(grid_points, output_path=paths["grid_shell_copc"])
+        pt.z = run_cfg.z_height
 
-    # Compute 3D viewshed for shell grid points
-    chunk_size = 5
-    viewshed_output_path = paths["output_viewshed_copc_3d"]
+    boundary_points = sample_polygon_boundary(aoi, sample_distance=run_cfg.resolution, z_height=0.0)
+    wall_zs = np.arange(0, run_cfg.z_height + run_cfg.resolution, run_cfg.resolution)
+    wall_points = [Point(pt.x, pt.y, z) for pt in boundary_points for z in wall_zs]
+    grid_points = top_points + wall_points
+    export_grid_to_copc(grid_points, output_path=run_paths.grid_shell_copc)
+
     calculate_viewshed_for_grid(
         target=target,
         grid_points=grid_points,
-        cylinder_radius=los_radius,
-        radius_mode=los_mode,
-        min_radius=los_start_radius,
-        max_radius=los_end_radius,
-        step_length=los_step_length,
-        input_path=output_facades_path,
-        output_path=viewshed_output_path,
+        cylinder_radius=run_cfg.los_radius,
+        radius_mode=run_cfg.los_mode,
+        min_radius=run_cfg.los_start_radius,
+        max_radius=run_cfg.los_end_radius,
+        step_length=run_cfg.los_step_length,
+        input_path=project_paths.facades_copc,
+        output_path=run_paths.output_viewshed_copc_3d,
         intervisibility_func=calculate_intervisibility,
-        chunk_size=chunk_size,
+        chunk_size=5,
     )
 
-    # Compute flight height ceiling from the 3D viewshed COPC
-    flight_height_output_path = paths["output_flight_height_tif"]
     _, _, height_points = calculate_flight_height(
         aoi=aoi,
-        resolution=resolution,
-        input_path=viewshed_output_path,
-        output_path=flight_height_output_path,
+        resolution=run_cfg.resolution,
+        input_path=run_paths.output_viewshed_copc_3d,
+        output_path=run_paths.output_flight_height_tif,
     )
 
-    logger.info(f"Flight height GeoTIFF written to {flight_height_output_path}")
+    only_save_viewable_volume(run_paths.output_viewshed_copc_3d, run_paths.viewable_volume_copc)
 
-    grid_points = int(len(height_points))
-
-    _save_metadata(
-        paths["metadata"],
-        {
-            "name": run_name,
-            "run_folder": str(run_folder),
+    metadata = {
+        "project": {
+            "name": project_paths.name,
+            "folder": str(project_paths.folder),
             "profile": active_profile,
             "aoi_source_crs": source_aoi_crs,
-            "EPSG": "EPSG:28992",
+            "processing_crs": "EPSG:28992",
+            "classification_method": "cached",
+        },
+        "run": {
+            "name": run_cfg.name,
+            "folder": str(run_paths.folder),
             "runtime_seconds": round(time.perf_counter() - start_time, 3),
-            "classification_method": classification_method,
-            "dataset": dataset,
+            "resolution": run_cfg.resolution,
+            "z_height": run_cfg.z_height,
+            "los": {
+                "mode": run_cfg.los_mode,
+                "radius": run_cfg.los_radius,
+                "min_radius": run_cfg.los_start_radius,
+                "max_radius": run_cfg.los_end_radius,
+                "step_length": run_cfg.los_step_length,
+            },
             "target_source": target_source_used,
             "target_point": {"x": target.x, "y": target.y, "z": target.z},
-            "los": {
-                "mode": los_mode,
-                "radius": los_radius,
-                "min_radius": los_start_radius,
-                "max_radius": los_end_radius,
-                "step_length": los_step_length,
-            },
-            "resolution": resolution,
-            "grid_points": grid_points,
-            "files": {k: str(v) for k, v in paths.items()},
+            "grid_points": int(len(height_points)),
+            "files": {**{k: str(v) for k, v in project_paths.key_map().items()}, **{k: str(v) for k, v in run_paths.key_map().items()}},
         },
-    )
+    }
+    run_paths.metadata.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
-    only_save_viewable_volume(paths["output_viewshed_copc_3d"], paths["output_viewshed_copc_3d"].with_name("viewshed_3d_viewable_volume.copc.laz"))
-
-    # Remove unwanted files according to config
-    delete = config.get("remove", [])
-    for key, path in paths.items():
-        if key in delete and path.exists():
-            path.unlink()
-
-    logger.info(f"Flight height GeoTIFF written to {flight_height_output_path}")
+    _cleanup_outputs(profile_cfg.get("remove", []), project_paths.key_map(), run_paths.key_map())
+    run_logger.info(f"Run completed: {run_paths.folder}")
+    return run_paths
 
 
 if __name__ == "__main__":
-    NAME = "Delft_bouwkunde"
-    DATASET = ["AHN5"]  # Options: None (defaults to newest), or list of dataset names (e.g. ["AHN6", "AHN5"])
-    CLASSIFICATION_METHOD = "myria3d"  # Options: "myria3d", "rule-based"
-    RESOLUTION = 2
-    LOS_MODE = "fixed"  # Options: "fixed", "widening_linear"
-    LOS_RADIUS = 0.15
-    LOS_START_RADIUS = 0.15
-    LOS_END_RADIUS = 0.15
-    LOS_STEP_LENGTH = 0.15
-    PROFILE = "testing"  # Defaults to production when unset
-    AOI_SOURCE = Path("data/example_aoi/Delft_bouwkunde.geojson")  # Path("data/example_aoi/Groningen_plein.geojson")
-    TARGET_SOURCE = Path("data/Delft_bouwkunde/target_point_Delft.copc.laz")  # Path("data/target_point.copc.laz")
-    OVERWRITE = True
-    Z_HEIGHT = 50.0
+    if not Path("data/test_aoi.geojson").exists():
+        aoi = AOIPolygon.get_from_user(title="Draw AOI for testing")
+        aoi.save_to_file(Path("data/test_aoi.geojson"))
 
-    # base run
-
-    main(
-        name=NAME,
-        dataset=DATASET,
-        classification_method=CLASSIFICATION_METHOD,
-        resolution=RESOLUTION,
-        los_mode=LOS_MODE,
-        los_radius=LOS_RADIUS,
-        los_start_radius=LOS_START_RADIUS,
-        los_end_radius=LOS_END_RADIUS,
-        los_step_length=LOS_STEP_LENGTH,
-        profile=PROFILE,
-        aoi_source=AOI_SOURCE,
-        target_source=TARGET_SOURCE,
-        overwrite=OVERWRITE,
-        z_height=Z_HEIGHT,
+    project_cfg = ProjectConfig(
+        name="refactor_test",
+        dataset=["AHN5"],
+        profile="testing",
+        aoi_source=Path("data/test_aoi.geojson"),
+        overwrite=False,
     )
 
-    # test multiple runs with increasing max_radius to see how it affects 2d visibility
+    project = prepare_project(project_cfg)
 
-    # for LOS_END_RADIUS in [0.10, 0.20, 0.30, 0.40, 0.50, 1, 3, 10]:
-    #     main(
-    #         name=NAME + f"_maxradius_{LOS_END_RADIUS}",
-    #         dataset=DATASET,
-    #         classification_method=CLASSIFICATION_METHOD,
-    #         resolution=RESOLUTION,
-    #         los_mode=LOS_MODE,
-    #         los_radius=LOS_RADIUS,
-    #         los_start_radius=LOS_START_RADIUS,
-    #         los_end_radius=LOS_END_RADIUS,
-    #         los_step_length=LOS_STEP_LENGTH,
-    #         profile=PROFILE,
-    #         aoi_source=AOI_SOURCE,
-    #         target_source=TARGET_SOURCE,
-    #         overwrite=OVERWRITE,
-    #         z_height=Z_HEIGHT,
-    #     )
+    run_config = RunConfig(name="refactor_test_run_2", resolution=1.0, los_mode="fixed", los_radius=0.15, z_height=20.0)
+
+    calculate_viewshed(project, run_config, profile=project_cfg.profile)
