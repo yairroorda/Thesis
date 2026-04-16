@@ -17,6 +17,8 @@ from calculate import (
     calculate_viewshed_for_grid,
     export_grid_to_copc,
     generate_grid,
+    iter_merge_2d_viewshed,
+    iter_merge_3d_viewshed,
     only_save_viewable_volume,
     sample_polygon_boundary,
 )
@@ -305,112 +307,6 @@ def remove_intermediate_files(project_paths: ProjectPaths, run_paths: RunPaths, 
             file_path.unlink()
 
     # TODO: refactor to not use file_map
-
-
-def iter_merge_2d_viewshed(runs: Iterable[RunPaths], output_path: Path) -> Path:
-    """Loop over 2d tif viewshed for each runpath and merge into single tif using rasterio"""
-
-    tiffs = [run.output_viewshed_tif_2d for run in runs]
-    for tif in tiffs:
-        if not tif.exists():
-            logger.error(f"TIFF file does not exist: {tif}")
-            raise FileNotFoundError(f"TIFF file does not exist: {tif}")
-
-    # Iteratively merge the TIFFS taking the maximum visibility value at each pixel
-    import rasterio
-    from rasterio.merge import merge
-
-    datasets = [rasterio.open(tif) for tif in tiffs]
-    mosaic, out_transform = merge(datasets, method="max")
-    out_meta = datasets[0].meta.copy()
-    out_meta.update(
-        {
-            "height": mosaic.shape[1],
-            "width": mosaic.shape[2],
-            "transform": out_transform,
-        }
-    )
-    with rasterio.open(output_path, "w", **out_meta) as dest:
-        dest.write(mosaic)
-        logger.info(f"Merged viewshed saved to: {output_path}")
-        return output_path
-
-
-def iter_merge_3d_viewshed(runs: Iterable[RunPaths], output_path: Path) -> Path:
-    """Iteratively merge voxel COPCs by taking max Visibility for matching voxel XYZ."""
-
-    copcs = [run.output_viewshed_voxel_grid_3d for run in runs]
-    if not copcs:
-        raise ValueError("No runs provided for 3D viewshed merge.")
-
-    for copc in copcs:
-        if not copc.exists():
-            logger.error(f"COPC file does not exist: {copc}")
-            raise FileNotFoundError(f"COPC file does not exist: {copc}")
-
-    import pdal
-
-    def _read_copc(path: Path) -> np.ndarray:
-        read_pipeline = {"pipeline": [{"type": "readers.copc", "filename": str(path)}]}
-        pipeline = pdal.Pipeline(json.dumps(read_pipeline))
-        pipeline.execute()
-        if not pipeline.arrays:
-            raise ValueError(f"No arrays found in COPC: {path}")
-        return np.concatenate(pipeline.arrays)
-
-    def _max_merge_voxels(left: np.ndarray, right: np.ndarray, decimals: int = 6) -> np.ndarray:
-        lx = np.round(left["X"], decimals)
-        ly = np.round(left["Y"], decimals)
-        lz = np.round(left["Z"], decimals)
-        rx = np.round(right["X"], decimals)
-        ry = np.round(right["Y"], decimals)
-        rz = np.round(right["Z"], decimals)
-
-        all_x = np.concatenate([lx, rx])
-        all_y = np.concatenate([ly, ry])
-        all_z = np.concatenate([lz, rz])
-        all_v = np.concatenate([left["Visibility"].astype(np.float64), right["Visibility"].astype(np.float64)])
-
-        key_dtype = np.dtype([("X", "f8"), ("Y", "f8"), ("Z", "f8")])
-        keys = np.empty(all_x.shape[0], dtype=key_dtype)
-        keys["X"] = all_x
-        keys["Y"] = all_y
-        keys["Z"] = all_z
-
-        unique_keys, inverse = np.unique(keys, return_inverse=True)
-        max_visibility = np.full(unique_keys.shape[0], -np.inf, dtype=np.float64)
-        np.maximum.at(max_visibility, inverse, all_v)
-
-        out_dtype = [("X", "f8"), ("Y", "f8"), ("Z", "f8"), ("Visibility", "f4")]
-        out = np.empty(unique_keys.shape[0], dtype=out_dtype)
-        out["X"] = unique_keys["X"]
-        out["Y"] = unique_keys["Y"]
-        out["Z"] = unique_keys["Z"]
-        out["Visibility"] = max_visibility.astype(np.float32)
-        return out
-
-    merged = _read_copc(copcs[0])
-    logger.info(f"Initialized 3D merge with {copcs[0]} ({merged.shape[0]} voxels)")
-
-    for idx, copc_path in enumerate(copcs[1:], start=2):
-        current = _read_copc(copc_path)
-        merged = _max_merge_voxels(merged, current)
-        logger.info(f"Merged {idx}/{len(copcs)} voxel files; current merged voxel count: {merged.shape[0]}")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    write_pipeline = {
-        "pipeline": [
-            {
-                "type": "writers.copc",
-                "filename": str(output_path),
-                "forward": "all",
-                "extra_dims": "all",
-            }
-        ]
-    }
-    pdal.Pipeline(json.dumps(write_pipeline), arrays=[merged]).execute()
-    logger.info(f"Merged viewshed saved to: {output_path}")
-    return output_path
 
 
 if __name__ == "__main__":
