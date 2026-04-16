@@ -4,7 +4,6 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import tomllib
@@ -298,15 +297,34 @@ def calculate_3d_flight_height(project_paths: ProjectPaths, run_cfg: RunConfig, 
 def remove_intermediate_files(project_paths: ProjectPaths, run_paths: RunPaths, profile: str = "testing") -> None:
     profile_cfg, _ = load_profile(profile)
 
+    project_files = {
+        "aoi": project_paths.aoi,
+        "input_copc": project_paths.input_copc,
+        "rescaled_copc": project_paths.rescaled_copc,
+        "classified_copc": project_paths.classified_copc,
+        "facades_copc": project_paths.facades_copc,
+        "project_log": project_paths.project_log,
+    }
+    run_files = {
+        "run_log": run_paths.run_log,
+        "metadata": run_paths.metadata,
+        "target_point_copc": run_paths.target_point_copc,
+        "output_viewshed_copc_2d": run_paths.output_viewshed_copc_2d,
+        "output_viewshed_tif_2d": run_paths.output_viewshed_tif_2d,
+        "grid_shell_copc": run_paths.grid_shell_copc,
+        "output_viewshed_copc_3d": run_paths.output_viewshed_copc_3d,
+        "output_viewshed_voxel_grid_3d": run_paths.output_viewshed_voxel_grid_3d,
+        "output_flight_height_tif": run_paths.output_flight_height_tif,
+        "viewable_volume_copc": run_paths.viewable_volume_copc,
+    }
+
     files_to_remove = profile_cfg.get("remove", [])
-    merged_file_map = {**project_paths.file_map, **run_paths.file_map}
+    merged_file_map = {**project_files, **run_files}
     for file_key in files_to_remove:
         file_path = merged_file_map.get(file_key)
         if file_path and file_path.exists():
             logger.info(f"Removing intermediate file: {file_path}")
             file_path.unlink()
-
-    # TODO: refactor to not use file_map
 
 
 if __name__ == "__main__":
