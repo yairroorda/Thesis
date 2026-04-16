@@ -8,7 +8,7 @@ from urllib.request import urlretrieve
 import geopandas as gpd
 from shapely.geometry import box
 
-from query_copc import AOIPolygon
+from models import AOIPolygon
 from utils import get_logger, status_spinner, timed
 
 logger = get_logger(name="3DBAG")

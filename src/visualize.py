@@ -8,7 +8,8 @@ import rasterio
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
 
-from query_copc import AOIPolygon
+from models import ProjectPaths, RunConfig, RunPaths
+from models import AOIPolygon
 from utils import get_logger, timed
 
 logger = get_logger("Visualize")
@@ -88,19 +89,16 @@ def save_viewshed_as_tif(
 
 @timed("Saving viewshed as voxel grid")
 def save_viewshed_as_voxel_grid(
-    input_path: Path,
-    aoi: AOIPolygon,
-    resolution: float,
-    file_type: VoxelFile,
-    output_path: Path,
-    input_crs: str = "EPSG:28992",
+    run_paths: RunPaths,
+    run_cfg: RunConfig,
+    project_paths: ProjectPaths,
+    file_type: VoxelFile = "copc",
 ) -> None:
     """
     Save viewshed as a voxel grid by assigning each point to its voxel and
     storing the maximum visibility of all points that fall within that voxel.
     """
-    reader_type = "readers.copc" if ".copc" in input_path.name.lower() else "readers.las"
-    pipeline = pdal.Pipeline(json.dumps({"pipeline": [{"type": reader_type, "filename": str(input_path)}]}))
+    pipeline = pdal.Pipeline(json.dumps({"pipeline": [{"type": "readers.copc", "filename": str(run_paths.output_viewshed_copc_3d)}]}))
     pipeline.execute()
     points = np.concatenate(pipeline.arrays)
     x_coords, y_coords, z_coords = points["X"], points["Y"], points["Z"]
@@ -109,16 +107,13 @@ def save_viewshed_as_voxel_grid(
     min_x, max_x = np.min(x_coords), np.max(x_coords)
     min_y, max_y = np.min(y_coords), np.max(y_coords)
     min_z, max_z = np.min(z_coords), np.max(z_coords)
-    width = int(np.floor((max_x - min_x) / resolution)) + 1
-    height = int(np.floor((max_y - min_y) / resolution)) + 1
-    depth = int(np.floor((max_z - min_z) / resolution)) + 1
+    width = int(np.floor((max_x - min_x) / run_cfg.resolution)) + 1
+    height = int(np.floor((max_y - min_y) / run_cfg.resolution)) + 1
+    depth = int(np.floor((max_z - min_z) / run_cfg.resolution)) + 1
 
-    transform = from_origin(min_x - (resolution / 2.0), max_y + (resolution / 2.0), resolution, resolution)
+    transform = from_origin(min_x - (run_cfg.resolution / 2.0), max_y + (run_cfg.resolution / 2.0), run_cfg.resolution, run_cfg.resolution)
 
-    if aoi.crs != input_crs:
-        logger.debug(f"Reprojecting AOI from {aoi.crs} to {input_crs} for voxel grid export")
-        aoi = aoi.to_crs(input_crs)
-
+    aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs("EPSG:28992")
     aoi_mask = rasterize(
         [(aoi, 1)],
         out_shape=(height, width),
@@ -129,9 +124,9 @@ def save_viewshed_as_voxel_grid(
 
     voxel_data = np.full((depth, height, width), -1.0, dtype=np.float32)
 
-    cols = np.floor((x_coords - min_x) / resolution).astype(np.int64)
-    rows = np.floor((max_y - y_coords) / resolution).astype(np.int64)
-    depths = np.floor((z_coords - min_z) / resolution).astype(np.int64)
+    cols = np.floor((x_coords - min_x) / run_cfg.resolution).astype(np.int64)
+    rows = np.floor((max_y - y_coords) / run_cfg.resolution).astype(np.int64)
+    depths = np.floor((z_coords - min_z) / run_cfg.resolution).astype(np.int64)
 
     valid = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width) & (depths >= 0) & (depths < depth)
     valid &= aoi_mask[rows.clip(0, height - 1), cols.clip(0, width - 1)]
@@ -143,24 +138,36 @@ def save_viewshed_as_voxel_grid(
         mask = voxel_data >= 0
         z_idx, y_idx, x_idx = np.where(mask)
         arr = np.empty(mask.sum(), dtype=[("X", "f8"), ("Y", "f8"), ("Z", "f8"), ("Visibility", "f4")])
-        arr["X"] = min_x + (x_idx + 0.5) * resolution
-        arr["Y"] = max_y - (y_idx + 0.5) * resolution
-        arr["Z"] = min_z + (z_idx + 0.5) * resolution
+        arr["X"] = min_x + (x_idx + 0.5) * run_cfg.resolution
+        arr["Y"] = max_y - (y_idx + 0.5) * run_cfg.resolution
+        arr["Z"] = min_z + (z_idx + 0.5) * run_cfg.resolution
         arr["Visibility"] = voxel_data[mask]
-        pdal.Pipeline(json.dumps({"pipeline": [{"type": "writers.copc", "filename": str(output_path), "forward": "all", "extra_dims": "all"}]}), arrays=[arr]).execute()
-        logger.info(f"Saved 3D viewshed voxel grid in COPC format to {output_path}")
+
+        write_pipeline = {
+            "pipeline": [
+                {
+                    "type": "writers.copc",
+                    "filename": str(run_paths.output_viewshed_voxel_grid_3d),
+                    "forward": "all",
+                    "extra_dims": "all",
+                }
+            ]
+        }
+        pdal.Pipeline(json.dumps(write_pipeline), arrays=[arr]).execute()
+        logger.info(f"Saved 3D viewshed voxel grid in COPC format to {run_paths.output_viewshed_voxel_grid_3d}")
 
     elif file_type == "vti":
         import pyvista as pv
 
         grid = pv.ImageData(
             dimensions=(width + 1, height + 1, depth + 1),
-            spacing=(resolution, resolution, resolution),
+            spacing=(run_cfg.resolution, run_cfg.resolution, run_cfg.resolution),
             origin=(min_x, min_y, min_z),
         )
         grid.cell_data["visibility"] = np.transpose(voxel_data, (2, 1, 0)).ravel(order="F")
-        grid.save(output_path)
-        logger.info(f"Saved 3D viewshed voxel grid in VTI format to {output_path}")
+        output_vti_path = run_paths.folder / "viewshed_3d_voxel.vti"
+        grid.save(output_vti_path)
+        logger.info(f"Saved 3D viewshed voxel grid in VTI format to {output_vti_path}")
 
 
 if __name__ == "__main__":

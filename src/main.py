@@ -3,7 +3,6 @@ import os
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -21,96 +20,13 @@ from calculate import (
     sample_polygon_boundary,
 )
 from enhance_facades import generate_facades
+from models import ProjectConfig, ProjectPaths, RunConfig, RunPaths
 from query_copc import AOIPolygon, get_pointcloud_aoi
 from segment import classify_vegetation_rule_based
 from utils import get_logger, timed
 from visualize import save_viewshed_as_tif
 
 logger = get_logger(name="Main")
-
-
-@dataclass
-class ProjectConfig:
-    name: str = "test_project"
-    dataset: list[str] = field(default_factory=lambda: ["AHN6", "AHN5"])
-    classification_method: str = "myria3d"
-    profile: str = "testing"
-    aoi_source: Path | None = None
-    overwrite: bool = False
-
-
-@dataclass
-class RunConfig:
-    name: str = "test_run"
-    resolution: float = 2.0
-    los_mode: str = "fixed"
-    los_radius: float = 0.15
-    los_start_radius: float = 0.15
-    los_end_radius: float = 0.15
-    los_step_length: float = 0.15
-    z_height: float = 50.0
-    target_source: Path | None = None
-
-    def __post_init__(self):
-        if self.los_mode == "fixed":
-            self.los_start_radius = self.los_radius
-            self.los_end_radius = self.los_radius
-
-
-class ProjectPaths:
-    def __init__(self, project_name: str, base_dir: Path = Path("data")):
-        self.name = project_name
-        self.folder = base_dir / project_name
-        self.folder.mkdir(parents=True, exist_ok=True)
-
-        self.runs_folder = self.folder / "runs"
-        self.runs_folder.mkdir(parents=True, exist_ok=True)
-
-        self.aoi = self.folder / "aoi.geojson"
-        self.input_copc = self.folder / "input.copc.laz"
-        self.rescaled_copc = self.folder / "rescaled.copc.laz"
-        self.classified_copc = self.folder / "classified.copc.laz"
-        self.facades_copc = self.folder / "facades.copc.laz"
-        self.project_log = self.folder / "project.log"
-        self.file_map = {
-            "aoi": self.aoi,
-            "input_copc": self.input_copc,
-            "rescaled_copc": self.rescaled_copc,
-            "classified_copc": self.classified_copc,
-            "facades_copc": self.facades_copc,
-            "project_log": self.project_log,
-        }
-
-    @property
-    def is_prepared(self) -> bool:
-        return self.facades_copc.exists()
-
-
-class RunPaths:
-    def __init__(self, project_paths: ProjectPaths, run_name: str):
-        self.project = project_paths
-        self.name = run_name
-        self.folder = project_paths.runs_folder / run_name
-        self.folder.mkdir(parents=True, exist_ok=True)
-
-        self.run_log = self.folder / "run.log"
-        self.metadata = self.folder / "metadata.json"
-        self.target_point_copc = self.folder / "target_point.copc.laz"
-        self.output_viewshed_copc_2d = self.folder / "viewshed_2d.copc.laz"
-        self.grid_shell_copc = self.folder / "grid_points_3d_shell.copc.laz"
-        self.output_viewshed_copc_3d = self.folder / "viewshed_3d.copc.laz"
-        self.output_flight_height_tif = self.folder / "flight_height.tif"
-        self.viewable_volume_copc = self.folder / "viewshed_3d_viewable_volume.copc.laz"
-        self.file_map = {
-            "run_log": self.run_log,
-            "metadata": self.metadata,
-            "target_point_copc": self.target_point_copc,
-            "grid_shell_copc": self.grid_shell_copc,
-            "output_viewshed_copc_2d": self.output_viewshed_copc_2d,
-            "output_viewshed_copc_3d": self.output_viewshed_copc_3d,
-            "output_flight_height_tif": self.output_flight_height_tif,
-            "viewable_volume_copc": self.viewable_volume_copc,
-        }
 
 
 def load_profile(profile: str | None = None) -> tuple[dict, str]:
@@ -150,7 +66,7 @@ def _load_or_create_target(target_path: Path, target_source: Path | None, aoi: A
 
     target = Point.get_from_user("Select target point for viewshed analysis", aoi=aoi)
     export_grid_to_copc([target], output_path=target_path)
-    return target
+    return target, "user"
 
 
 def _write_metadata(run_cfg: RunConfig, project_paths: ProjectPaths, run_paths: RunPaths, active_profile: str, source_aoi_crs: str, start_time: float) -> None:
@@ -176,7 +92,17 @@ def _write_metadata(run_cfg: RunConfig, project_paths: ProjectPaths, run_paths: 
                 "max_radius": run_cfg.los_end_radius,
                 "step_length": run_cfg.los_step_length,
             },
-            "files": {**{k: str(v) for k, v in project_paths.file_map.items()}, **{k: str(v) for k, v in run_paths.file_map.items()}},
+            "files": {
+                "input_copc": str(project_paths.input_copc),
+                "rescaled_copc": str(project_paths.rescaled_copc),
+                "classified_copc": str(project_paths.classified_copc),
+                "facades_copc": str(project_paths.facades_copc),
+                "target_point_copc": str(run_paths.target_point_copc),
+                "viewshed_2d_copc": str(run_paths.output_viewshed_copc_2d),
+                "viewshed_3d_copc": str(run_paths.output_viewshed_copc_3d),
+                "flight_height_tif": str(run_paths.output_flight_height_tif),
+                "viewable_volume_copc": str(run_paths.viewable_volume_copc),
+            },
         },
     }
     run_paths.metadata.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -249,7 +175,11 @@ def calculate_2d_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profi
 
     start_time = time.perf_counter()
 
-    target = _load_or_create_target(target_path=run_paths.target_point_copc, target_source=run_cfg.target_source, aoi=aoi)
+    target, target_source_used = _load_or_create_target(
+        target_path=run_paths.target_point_copc,
+        target_source=run_cfg.target_source,
+        aoi=aoi,
+    )
 
     viewshed_2d_path = run_paths.output_viewshed_copc_2d
     _, _, visibility_points = calculate_viewshed_2d(
@@ -265,7 +195,7 @@ def calculate_2d_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profi
         output_path=viewshed_2d_path,
         z_offset=0.3,
     )
-    viewshed_tif = viewshed_2d_path.with_suffix(".tif")
+    viewshed_tif = run_paths.output_viewshed_tif_2d
     save_viewshed_as_tif(
         x_coords=visibility_points["X"],
         y_coords=visibility_points["Y"],
@@ -296,7 +226,11 @@ def calculate_3d_viewshed(project_paths: ProjectPaths, run_cfg: RunConfig, profi
 
     start_time = time.perf_counter()
 
-    target = _load_or_create_target(target_path=run_paths.target_point_copc, target_source=run_cfg.target_source, aoi=aoi)
+    target, target_source_used = _load_or_create_target(
+        target_path=run_paths.target_point_copc,
+        target_source=run_cfg.target_source,
+        aoi=aoi,
+    )
 
     top_points = generate_grid(aoi, run_cfg.resolution, z_height=run_cfg.z_height, two_d=True)
     for pt in top_points:
@@ -385,9 +319,8 @@ if __name__ == "__main__":
 
     project_paths = prepare_project(project_cfg)
 
-    run_config = RunConfig(name="refactor_test_run_2", resolution=1.0, los_mode="fixed", los_radius=0.15, z_height=20.0)
+    run_config = RunConfig(name="refactor_test_run", resolution=1.0, los_mode="fixed", los_radius=0.15, z_height=20.0)
 
     run_paths = calculate_2d_viewshed(project_paths, run_config, profile=project_cfg.profile)
     run_paths = calculate_3d_viewshed(project_paths, run_config, profile=project_cfg.profile)
     run_paths = calculate_3d_flight_height(project_paths, run_config, profile=project_cfg.profile)
-    remove_intermediate_files(project_paths=project_paths, run_paths=run_paths, profile=project_cfg.profile)

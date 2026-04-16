@@ -38,7 +38,7 @@ def make_map(title, aoi=None):
 
 def main():
     from calculate import Point, Segment
-    from query_copc import AOIPolygon
+    from models import AOIPolygon
     from utils import get_logger
 
     logger = get_logger(name="GUI Test")

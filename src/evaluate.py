@@ -7,8 +7,7 @@ from shapely import affinity
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon
 
-from calculate import Point
-from query_copc import AOIPolygon
+from models import AOIPolygon, Point
 
 
 def generate_benchmark_aois(

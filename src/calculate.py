@@ -14,8 +14,7 @@ from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon as ShapelyPolygon
 from tqdm import tqdm
 
-from gui import make_map
-from query_copc import AOIPolygon
+from models import AOIPolygon, Cylinder, Point, Segment
 from utils import get_logger, timed
 from visualize import save_viewshed_as_tif
 
@@ -49,182 +48,6 @@ def _validate_points_in_aoi(points_xy: list[tuple[float, float]], aoi: AOIPolygo
     for (x, y), label in zip(points_xy, labels):
         if not aoi_rd.covers(ShapelyPoint(x, y)):
             raise ValueError(f"{label} is outside the AOI. Please select a point inside the AOI.")
-
-
-class Point:
-    def __init__(self, x: float, y: float, z: float):
-        self.array_coords = np.array([x, y, z], dtype=np.float64)
-        self.x = x
-        self.y = y
-        self.z = z
-
-    @classmethod
-    def get_from_file(cls, path: Path) -> "Point":
-        """Read first point from COPC/LAZ and return it as a Point."""
-        reader_type = "readers.copc" if ".copc" in path.name.lower() else "readers.las"
-        pipeline = pdal.Pipeline(
-            json.dumps(
-                {
-                    "pipeline": [
-                        {"type": reader_type, "filename": str(path)},
-                    ]
-                }
-            )
-        )
-        count = pipeline.execute()
-        if count == 0 or not pipeline.arrays:
-            raise ValueError(f"No points found in target source file: {path}")
-        first = pipeline.arrays[0][0]
-        return cls(first["X"], first["Y"], first["Z"])
-
-    @classmethod
-    def get_from_user(cls, title: str = "Set point", aoi: AOIPolygon | None = None) -> "Point":
-        """Let the user pick one point on the map. Returns (x, y, z) in RD."""
-        import tkinter as tk
-
-        root, map_widget, controls = make_map(title, aoi=aoi)
-
-        p_xy = {"v": None}
-        marker = {"p": None}
-
-        def on_click(coords):
-            lat_c, lon_c = coords[0], coords[1]
-            x, y = _TO_RD.transform(lon_c, lat_c)
-
-            if marker["p"] is not None:
-                marker["p"].delete()
-            marker["p"] = map_widget.set_marker(lat_c, lon_c, text="P1")
-            p_xy["v"] = (x, y)
-
-        tk.Label(controls, text="Point P1").pack(anchor="w")
-
-        tk.Label(controls, text="P1 Z").pack(anchor="w", pady=(8, 0))
-        pz = tk.Entry(controls)
-        pz.insert(0, "8.0")
-        pz.pack(fill=tk.X)
-
-        is_hag = tk.BooleanVar(value=True)
-        tk.Checkbutton(controls, text="Z is HAG (vs NAP)", variable=is_hag).pack(anchor="w", pady=(5, 0))
-
-        tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(10, 0))
-        map_widget.add_left_click_map_command(on_click)
-
-        root.mainloop()
-
-        if aoi is not None:
-            _validate_points_in_aoi([p_xy["v"]], aoi, labels=["Selected point"])
-
-        p = (*p_xy["v"], float(pz.get()))
-        root.destroy()
-
-        pt = cls(*p)
-        return hag_to_nap([pt])[0] if is_hag.get() else pt
-
-    def save_to_file(self, path: Path, crs: str = "EPSG:28992") -> None:
-        """Save this point to a COPC/LAZ file for later retrieval."""
-        dtype = [("X", "f8"), ("Y", "f8"), ("Z", "f8")]
-        point_data = np.array([(self.x, self.y, self.z)], dtype=dtype)
-        write_to_copc(point_data, path, crs=crs)
-
-
-class Segment:
-    def __init__(self, point1: Point, point2: Point):
-        self.point1 = point1
-        self.point2 = point2
-        self.vector = np.array(
-            [point2.x - point1.x, point2.y - point1.y, point2.z - point1.z],
-            dtype=np.float64,
-        )
-        self.length_squared = np.dot(self.vector, self.vector)
-        self.length = np.sqrt(self.length_squared)
-
-    @classmethod
-    def get_from_user(cls, title: str = "Set P1/P2", aoi: AOIPolygon | None = None) -> "Segment":
-        """Let the user pick two points on the map. Returns (p1, p2) with p1/p2 as (x, y, z) in RD."""
-        import tkinter as tk
-
-        root, map_widget, controls = make_map(title, aoi=aoi)
-
-        mode = tk.StringVar(value="p1")
-        p1_xy = {"v": None}
-        p2_xy = {"v": None}
-        markers = {"p1": None, "p2": None}
-
-        def on_click(coords):
-            lat_c, lon_c = coords[0], coords[1]
-            x, y = _TO_RD.transform(lon_c, lat_c)
-            key = mode.get()
-
-            if markers[key] is not None:
-                markers[key].delete()
-            markers[key] = map_widget.set_marker(lat_c, lon_c, text=key.upper())
-            (p1_xy if key == "p1" else p2_xy)["v"] = (x, y)
-
-            if key == "p1":
-                mode.set("p2")
-
-        tk.Label(controls, text="Mode").pack(anchor="w")
-        tk.Radiobutton(controls, text="Point P1", variable=mode, value="p1").pack(anchor="w")
-        tk.Radiobutton(controls, text="Point P2", variable=mode, value="p2").pack(anchor="w")
-
-        tk.Label(controls, text="P1 Z").pack(anchor="w", pady=(8, 0))
-        p1z = tk.Entry(controls)
-        p1z.insert(0, "8.0")
-        p1z.pack(fill=tk.X)
-
-        tk.Label(controls, text="P2 Z").pack(anchor="w", pady=(8, 0))
-        p2z = tk.Entry(controls)
-        p2z.insert(0, "10.0")
-        p2z.pack(fill=tk.X)
-
-        is_hag = tk.BooleanVar(value=True)
-        tk.Checkbutton(controls, text="Z is HAG (vs NAP)", variable=is_hag).pack(anchor="w", pady=(5, 0))
-
-        tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(10, 0))
-        map_widget.add_left_click_map_command(on_click)
-
-        root.mainloop()
-
-        if aoi is not None:
-            _validate_points_in_aoi([p1_xy["v"], p2_xy["v"]], aoi, labels=["P1", "P2"])
-
-        p1 = (*p1_xy["v"], float(p1z.get()))
-        p2 = (*p2_xy["v"], float(p2z.get()))
-        root.destroy()
-
-        pts = [Point(*p1), Point(*p2)]
-        if is_hag.get():
-            pts = hag_to_nap(pts)
-        return cls(pts[0], pts[1])
-
-
-class Cylinder:
-    def __init__(
-        self,
-        segment: Segment,
-        min_radius: float,
-        max_radius: float,
-        step_length: float,
-        radius_mode: RadiusMode = "fixed",
-    ):
-        self.segment = segment
-        self.min_radius = min_radius
-        self.max_radius = max_radius
-        self.step_length = step_length
-        self.radius_mode = radius_mode
-
-    @property
-    def radius(self) -> float:
-        return self.max_radius
-
-    def radius_at_t(self, t: np.ndarray | float) -> np.ndarray:
-        t_arr = np.asarray(t, dtype=np.float64)
-        t_clipped = np.clip(t_arr, 0.0, 1.0)
-
-        if self.radius_mode == "fixed" or self.min_radius == self.max_radius:
-            return np.full_like(t_clipped, self.max_radius, dtype=np.float64)
-
-        return self.min_radius + t_clipped * (self.max_radius - self.min_radius)
 
 
 def download_dtm_raster(aoi: AOIPolygon, buffer: float = 2.0) -> ahn.AhnRaster:
@@ -379,6 +202,8 @@ def get_PDAL_bounds_for_runs(point_pairs: list[Segment], radius: float) -> str:
 
 
 def write_to_copc(points_in_cylinder: np.ndarray, output_path: Path, crs: str = "EPSG:28992"):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     write_pipeline = {
         "pipeline": [
             {

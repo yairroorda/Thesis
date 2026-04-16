@@ -5,9 +5,10 @@ from pathlib import Path
 import numpy as np
 import pdal
 
-from calculate import Point, calculate_viewshed_2d, export_grid_to_copc, generate_grid, sample_polygon_boundary
+from calculate import calculate_viewshed_2d, export_grid_to_copc, generate_grid, sample_polygon_boundary
 from enhance_facades import generate_facades
-from query_copc import AOIPolygon, get_pointcloud_aoi
+from models import AOIPolygon, Point
+from query_copc import get_pointcloud_aoi
 from query_threedbag import ThreeDBAG
 from sample_threedbag import sample_on_mesh
 from utils import get_logger
