@@ -1,228 +1,38 @@
-import json
-import re
-import urllib.request
-import zipfile
 from pathlib import Path
 
-import geopandas as gpd
-import pdal
+from pointcloudlib import AHN1, AHN2, AHN3, AHN4, AHN5, AHN6, CanElevation, IGNLidarHD, PointCloudProvider
 
 from models import AOIPolygon
-from utils import get_logger, status_spinner, timed
+from utils import get_logger
 
 logger = get_logger(name="Query")
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
-_DATASETS = [
-    {
-        "name": "IGN_LIDAR_HD",
-        "file_type": "COPC",
-        "wfs_url": "https://data.geopf.fr/wfs/ows?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle&OUTPUTFORMAT=application/json",
-        "tile_col": "url",
-        "crs": "EPSG:2154",
-    },
-    {
-        "name": "AHN6",
-        "file_type": "COPC",
-        "index_url": "https://basisdata.nl/hwh-ahn/AUX/bladwijzer_AHN6.gpkg",
-        "index_cache_name": "index_waterschapshuis",
-        "layer": "bladindeling",
-        "base_url": "https://fsn1.your-objectstorage.com/hwh-ahn/AHN6/01_LAZ/",
-        "crs": "EPSG:28992",
-    },
-] + [
-    {
-        "name": f"AHN{v}",
-        "file_type": "LAS",
-        "index_url": "https://static.fwrite.org/2022/01/index_sheets.gpkg_.zip",
-        "index_cache_name": "index_geotiles",
-        "layer": "AHN_subunits",
-        "tile_col": "GT_AHNSUB",
-        "base_url": f"https://geotiles.citg.tudelft.nl/AHN{v}_T",
-        "crs": "EPSG:28992",
-    }
-    for v in range(5, 0, -1)
-]
-
-
-def _download_index(cache_name: str, index_url: str) -> Path:
-    local_path = DATA_DIR / f"{cache_name}.gpkg"
-    if not local_path.exists():
-        logger.info(f"Downloading {cache_name} index ...")
-        if index_url.endswith(".zip"):
-            tmp_zip = DATA_DIR / "tmp_index.zip"
-            urllib.request.urlretrieve(index_url, tmp_zip)
-            with zipfile.ZipFile(tmp_zip) as zf:
-                gpkg_name = next(n for n in zf.namelist() if n.endswith(".gpkg"))
-                local_path.write_bytes(zf.read(gpkg_name))
-            tmp_zip.unlink()
-        else:
-            urllib.request.urlretrieve(index_url, local_path)
-    return local_path
-
-
-def _find_tiles(gdf_polygon: gpd.GeoDataFrame, dataset: dict) -> list[str]:
-
-    # Get tile index
-    if "wfs_url" in dataset:
-        bounds = gdf_polygon.total_bounds
-        crs_code = dataset["crs"].split(":")[1]
-        bbox_str = f"{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]},urn:ogc:def:crs:EPSG::{crs_code}"
-
-        request_url = f"{dataset['wfs_url']}&BBOX={bbox_str}"
-        logger.info("Querying index via WFS ...")
-
-        index_gdf = gpd.read_file(request_url)
-        if index_gdf.empty:
-            return []
-    else:
-        kwargs = {"layer": dataset["layer"]} if "layer" in dataset else {}
-        index_gdf = gpd.read_file(_download_index(dataset["index_cache_name"], dataset["index_url"]), **kwargs)
-
-    # Get index and aoi in the same CRS before intersecting
-    if index_gdf.crs != gdf_polygon.crs:
-        index_gdf = index_gdf.to_crs(gdf_polygon.crs)
-
-    # Find intersecting tiles
-    hits = gpd.sjoin(index_gdf, gdf_polygon[["geometry"]], how="inner", predicate="intersects")
-
-    if hits.empty:
-        return []
-
-    if dataset.get("name") == "IGN_LIDAR_HD":
-        return list(dict.fromkeys(hits[dataset["tile_col"]].dropna().tolist()))
-    elif "tile_col" in dataset:
-        return [f"{dataset['base_url']}/{tile}.LAZ" for tile in dict.fromkeys(hits[dataset["tile_col"]])]
-    else:
-        urls = []
-        for _, row in hits.iterrows():
-            x = str(int(row["left"])).zfill(6)
-            y = str(int(row["bottom"])).zfill(6)
-            urls.append(f"{dataset['base_url']}AHN6_2025_C_{x}_{y}.COPC.LAZ")
-        return list(dict.fromkeys(urls))
-
-
-def _execute_pdal(tile_urls: list[str], aoi: AOIPolygon, file_type: str, output_path: Path) -> Path:
-    reader_type = "readers.copc" if file_type == "COPC" else "readers.las"
-    stages = []
-    merge_inputs = []
-
-    for i, url in enumerate(tile_urls):
-        if "data.geopf.fr" in url:
-            # Reconstruct the direct OVH S3 Classified bucket URL
-            OVH_BASE_URL = "https://storage.sbg.cloud.ovh.net/v1/AUTH_63234f509d6048bca3c9fd7928720ca1/ppk-lidar/"
-            orig_filename = url.split("/")[-1]
-            match = re.search(r"LAMB93_([A-Z]{2})_", url)
-            subfolder = match.group(1) if match else ""
-            # Try both O and C variants
-            # I dont know exactly what the difference is but some tiles are only available in one of them, so we check both
-            # I cant be bothered to look into it for now
-            found_url = None
-            for letter in ["O", "C"]:
-                filename = orig_filename.replace("PTS_LAMB93", f"PTS_{letter}_LAMB93")
-                test_url = f"{OVH_BASE_URL}{subfolder}/{filename}"
-                try:
-                    with urllib.request.urlopen(test_url) as resp:
-                        if resp.status == 200:
-                            found_url = test_url
-                            break
-                except Exception:
-                    continue
-            if found_url:
-                url = found_url
-                logger.debug(f"Rewrote URL to OVH S3: {url}")
-            else:
-                logger.warning(f"Could not find valid OVH S3 URL for {orig_filename}")
-
-        reader_tag = f"reader_{i}"
-        reader = {"type": reader_type, "filename": url, "tag": reader_tag}
-
-        if reader_type == "readers.copc":
-            reader["polygon"] = aoi.wkt
-            reader["requests"] = 64
-            stages.append(reader)
-            merge_inputs.append(reader_tag)
-        else:
-            crop_tag = f"crop_{i}"
-            crop = {"type": "filters.crop", "polygon": aoi.wkt, "inputs": [reader_tag], "tag": crop_tag}
-            stages.extend([reader, crop])
-            merge_inputs.append(crop_tag)
-
-        pipeline = stages + [
-            {"type": "filters.merge", "inputs": merge_inputs},
-            {"type": "writers.copc", "filename": str(output_path), "forward": "all"},
-        ]
-
-    with status_spinner("Processing point cloud with PDAL ..."):
-        count = pdal.Pipeline(json.dumps(pipeline)).execute()
-
-    logger.info(f"Processed {count} points from {len(tile_urls)} tiles into {output_path}.")
-    return output_path
-
-
-@timed("Pointcloud query")
-def get_pointcloud_aoi(aoi: AOIPolygon, output_path: Path, aoi_crs: str = "EPSG:28992", include: list[str] | None = None) -> Path:
-    """Download point cloud for the given area and save to output_path."""
-    datasets = [d for d in _DATASETS if include is None or d["name"] in include]
-
-    gdf_original = gpd.GeoDataFrame(geometry=[aoi], crs=aoi_crs)
-
-    for dataset in datasets:
-        try:
-            target_crs = dataset.get("crs", "EPSG:28992")
-            gdf = gdf_original.to_crs(target_crs)
-
-            tile_urls = _find_tiles(gdf, dataset)
-            if not tile_urls:
-                logger.warning(f"Dataset {dataset['name']} returned no intersecting tiles.")
-                continue
-
-            logger.info(f"Using {dataset['name']}, found {len(tile_urls)} intersecting tiles.")
-            projected_aoi = gdf.geometry.iloc[0]
-
-            return _execute_pdal(tile_urls, projected_aoi, dataset["file_type"], output_path)
-
-        except Exception as exc:
-            logger.warning(f"Dataset {dataset['name']} failed: {exc}")
-            if output_path.exists():
-                output_path.unlink()
-
-    raise RuntimeError("Could not query requested data.")
-
 
 def demo_france():
-    logger.info("Starting LiDAR HD Query GUI...")
-    aoi_wgs84 = AOIPolygon.get_from_file(Path("data/Paris_eiffel_tower.geojson"))
-    # aoi_wgs84 = AOIPolygon.get_from_user("Select polygon AOI for IGN LiDAR HD query")
-
-    get_pointcloud_aoi(aoi=aoi_wgs84, aoi_crs="EPSG:4326", include=["IGN_LIDAR_HD"], output_path=DATA_DIR / "ign_test.copc.laz")
+    logger.info("Starting LiDAR HD query demo...")
+    aoi_wgs84 = AOIPolygon.get_from_file(Path("data/example_aoi/Paris_eiffel_tower.geojson"))
+    provider = IGNLidarHD(data_dir=DATA_DIR)
+    provider.fetch(aoi=aoi_wgs84.polygon, aoi_crs=aoi_wgs84.crs, output_path=DATA_DIR / "ign_test.copc.laz")
 
 
 def demo_ahn():
-    # aoi = AOIPolygon.get_from_user("Select polygon AOI for AHN query")
-    datasets = ["AHN6", "AHN5", "AHN4"]
+    providers: list[type[PointCloudProvider]] = [AHN6, AHN5, AHN4]
+    aoi_rdnew = AOIPolygon.get_from_file(Path("data/Groningen_plein.geojson"))
 
-    aoi_RDnew = AOIPolygon.get_from_file(Path("data/Groningen_plein.geojson"))
-
-    # long_strip = AOIPolygon(ShapelyPolygon([(6.549750540324112, 53.23743153832469), (6.5780044234527395, 53.20113982971779), (6.578433576895122, 53.201165536330386), (6.549885585048543, 53.237447338051304), (6.549750540324112, 53.23743153832469)]))
-    # aoi = AOIPolygon.get_from_user("Select polygon AOI for AHN query")
-
-    for dataset in datasets:
+    for provider_cls in providers:
+        provider = provider_cls(data_dir=DATA_DIR)
         try:
-            get_pointcloud_aoi(aoi_RDnew, include=[dataset], output_path=DATA_DIR / f"groningen_plein_{dataset}.copc.laz")
+            provider.fetch(
+                aoi=aoi_rdnew.polygon,
+                aoi_crs=aoi_rdnew.crs,
+                output_path=DATA_DIR / f"groningen_plein_{provider_cls.__name__}.copc.laz",
+            )
         except RuntimeError as exc:
-            logger.warning(f"Skipping {dataset}: {exc}")
+            logger.warning(f"Skipping {provider_cls.__name__}: {exc}")
 
 
 if __name__ == "__main__":
-    # demo_france()
-    # demo_ahn()
-
-    aoi = AOIPolygon.get_from_user("Select area of interest for main processing demo")
-
-    aoi.save_to_file(path=DATA_DIR / "test.geojson")
-    aoi_from_file = AOIPolygon.get_from_file(DATA_DIR / "test.geojson")
-
-    get_pointcloud_aoi(aoi_from_file, aoi_crs="EPSG:4326", include=["IGN_LIDAR_HD"], output_path=DATA_DIR / "test.copc.laz")
+    demo_france()

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 import tomllib
-
 from calculate import (
     Point,
     calculate_flight_height,
@@ -22,11 +21,12 @@ from calculate import (
     sample_polygon_boundary,
 )
 from enhance_facades import generate_facades
-from models import ProjectConfig, ProjectPaths, RunConfig, RunPaths
-from query_copc import AOIPolygon, get_pointcloud_aoi
+from models import AOIPolygon, ProjectConfig, ProjectPaths, RunConfig, RunPaths
 from segment import classify_vegetation_rule_based
 from utils import get_logger, timed
 from visualize import save_viewshed_as_tif, save_viewshed_as_voxel_grid
+
+from pointcloudlib import AHN1, AHN2, AHN3, AHN4, AHN5, AHN6, CanElevation, IGNLidarHD, ProviderChain
 
 logger = get_logger(name="Main")
 
@@ -137,7 +137,22 @@ def prepare_project(config: ProjectConfig) -> ProjectPaths:
         return paths
 
     logger.info("Downloading project point cloud for AOI")
-    get_pointcloud_aoi(aoi, aoi_crs="EPSG:28992", include=config.dataset, output_path=paths.input_copc)
+    dataset_map = {
+        "IGNLidarHD": IGNLidarHD,
+        "IGN_LIDAR_HD": IGNLidarHD,
+        "AHN6": AHN6,
+        "AHN5": AHN5,
+        "AHN4": AHN4,
+        "AHN3": AHN3,
+        "AHN2": AHN2,
+        "AHN1": AHN1,
+        "CanElevation": CanElevation,
+    }
+    providers = [dataset_map[name](data_dir=paths.folder) for name in config.dataset]
+    provider_chain = ProviderChain(providers)
+    result = provider_chain.fetch(aoi=aoi.polygon, aoi_crs="EPSG:28992", output_path=paths.input_copc)
+    if not result or not result.exists():
+        raise RuntimeError(f"Could not query requested data. Tried datasets in order: {config.dataset}")
 
     logger.info(f"Classifying vegetation using method: {config.classification_method}")
     if config.classification_method == "myria3d":
@@ -328,58 +343,60 @@ def remove_intermediate_files(project_paths: ProjectPaths, run_paths: RunPaths, 
 
 
 if __name__ == "__main__":
-    if not Path("data/test_aoi.geojson").exists():
+    testname = "pcl_test"
+
+    if not Path(f"data/{testname}_aoi.geojson").exists():
         aoi = AOIPolygon.get_from_user(title="Draw AOI for testing")
-        aoi.save_to_file(Path("data/test_aoi.geojson"))
+        aoi.save_to_file(Path(f"data/{testname}_aoi.geojson"))
 
     project_cfg = ProjectConfig(
-        name="merge_test_project",
-        dataset=["AHN5"],
+        name=f"{testname}_project",
+        dataset=["AHN6", "AHN5"],
         profile="testing",
-        aoi_source=Path("data/test_aoi.geojson"),
+        aoi_source=Path(f"data/{testname}_aoi.geojson"),
         overwrite=False,
     )
 
     project_paths = prepare_project(project_cfg)
 
-    # run_config = RunConfig(name="refactor_test_run_2", resolution=1.0, los_mode="fixed", los_radius=0.15, z_height=20.0)
+    run_config = RunConfig(name=f"{testname}_run", resolution=1.0, los_mode="fixed", los_radius=0.15, z_height=20.0)
 
-    # run_paths = calculate_2d_viewshed(project_paths, run_config, profile=project_cfg.profile)
+    run_paths = calculate_2d_viewshed(project_paths, run_config, profile=project_cfg.profile)
     # run_paths = calculate_3d_viewshed(project_paths, run_config, profile=project_cfg.profile)
     # run_paths = calculate_3d_flight_height(project_paths, run_config, profile=project_cfg.profile)
     # remove_intermediate_files(project_paths=project_paths, run_paths=run_paths, profile=project_cfg.profile)
 
-    runs = []
-    for i in range(3):
-        run_name = f"merge_run_{i + 1}"
+    # runs = []
+    # for i in range(3):
+    #     run_name = f"merge_run_{i + 1}"
 
-        # check if run already exists and skip if so
-        if (project_paths.runs_folder / run_name).exists():
-            logger.info(f"Run {run_name} already exists. Skipping.")
-            run_paths = RunPaths(project_paths, run_name)
-            runs.append(run_paths)
-            continue
+    #     # check if run already exists and skip if so
+    #     if (project_paths.runs_folder / run_name).exists():
+    #         logger.info(f"Run {run_name} already exists. Skipping.")
+    #         run_paths = RunPaths(project_paths, run_name)
+    #         runs.append(run_paths)
+    #         continue
 
-        run_cfg = RunConfig(
-            name=run_name,
-            target_source=project_paths.runs_folder / run_name / "target_point.copc.laz",
-        )
-        logger.debug(f"Run {i + 1} target point path: {run_cfg.target_source}")
+    #     run_cfg = RunConfig(
+    #         name=run_name,
+    #         target_source=project_paths.runs_folder / run_name / "target_point.copc.laz",
+    #     )
+    #     logger.debug(f"Run {i + 1} target point path: {run_cfg.target_source}")
 
-        # set target point for each run, either by loading existing or asking user to select
-        if not run_cfg.target_source.exists():
-            target = Point.get_from_user(title=f"Select target point for run {i + 1}", aoi=AOIPolygon.get_from_file(project_paths.aoi))
-            export_grid_to_copc([target], output_path=run_cfg.target_source)
-        else:
-            logger.info(f"Using existing target point for run {i + 1}: {run_cfg.target_source}")
+    #     # set target point for each run, either by loading existing or asking user to select
+    #     if not run_cfg.target_source.exists():
+    #         target = Point.get_from_user(title=f"Select target point for run {i + 1}", aoi=AOIPolygon.get_from_file(project_paths.aoi))
+    #         export_grid_to_copc([target], output_path=run_cfg.target_source)
+    #     else:
+    #         logger.info(f"Using existing target point for run {i + 1}: {run_cfg.target_source}")
 
-        calculate_2d_viewshed(project_paths, run_cfg, profile=project_cfg.profile)
-        run_paths = calculate_3d_viewshed(project_paths, run_cfg, profile=project_cfg.profile)
-        save_viewshed_as_voxel_grid(run_paths, run_cfg=run_cfg, project_paths=project_paths)
-        logger.debug(f"Run {i + 1} paths: {run_paths.target_point_copc}")
-        runs.append(run_paths)
+    #     calculate_2d_viewshed(project_paths, run_cfg, profile=project_cfg.profile)
+    #     run_paths = calculate_3d_viewshed(project_paths, run_cfg, profile=project_cfg.profile)
+    #     save_viewshed_as_voxel_grid(run_paths, run_cfg=run_cfg, project_paths=project_paths)
+    #     logger.debug(f"Run {i + 1} paths: {run_paths.target_point_copc}")
+    #     runs.append(run_paths)
 
-    merged_folder = project_paths.runs_folder / "merged"
-    merged_folder.mkdir(exist_ok=True)
-    iter_merged_run_paths_2d = iter_merge_2d_viewshed(runs=runs, output_path=merged_folder / "merged_viewshed.geotiff")
-    iter_merged_run_paths_3d = iter_merge_3d_viewshed(runs=runs, output_path=merged_folder / "merged_viewshed.copc.laz")
+    # merged_folder = project_paths.runs_folder / "merged"
+    # merged_folder.mkdir(exist_ok=True)
+    # iter_merged_run_paths_2d = iter_merge_2d_viewshed(runs=runs, output_path=merged_folder / "merged_viewshed.geotiff")
+    # iter_merged_run_paths_3d = iter_merge_3d_viewshed(runs=runs, output_path=merged_folder / "merged_viewshed.copc.laz")

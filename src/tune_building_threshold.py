@@ -4,11 +4,11 @@ from pathlib import Path
 
 import numpy as np
 import pdal
+from pointcloudlib import AHN4
 
 from calculate import calculate_viewshed_2d, export_grid_to_copc, generate_grid, sample_polygon_boundary
 from enhance_facades import generate_facades
 from models import AOIPolygon, Point
-from query_copc import get_pointcloud_aoi
 from query_threedbag import ThreeDBAG
 from sample_threedbag import sample_on_mesh
 from utils import get_logger
@@ -122,7 +122,10 @@ def main():
     ahn_facades_path = run_folder / "facades.copc.laz"
     ahn_filtered_path = run_folder / "filtered.copc.laz"
 
-    get_pointcloud_aoi(aoi=aoi, output_path=ahn_input, include=["AHN4"])
+    ahn4 = AHN4(data_dir=run_folder)
+    ahn_fetch_result = ahn4.fetch(aoi=aoi.polygon, output_path=ahn_input, aoi_crs=aoi.crs)
+    if not ahn_fetch_result or not ahn_fetch_result.exists():
+        raise RuntimeError("Failed to fetch AHN4 data for AOI.")
     subprocess.run(f"pixi run -e myria3d python src/segment.py {run_name} {'myria3d'}", shell=True)
     generate_facades(ahn_classified_path, ahn_facades_path, point_spacing=0.2)
     filter_buildings(ahn_facades_path, ahn_filtered_path)

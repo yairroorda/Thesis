@@ -6,11 +6,10 @@ from typing import Literal
 import geopandas as gpd
 import numpy as np
 import pdal
+from gui import make_map
 from pyproj import Transformer
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon as ShapelyPolygon
-
-from gui import make_map
 
 RadiusMode = Literal["fixed", "widening_linear"]
 _TO_RD = Transformer.from_crs("EPSG:4326", "EPSG:28992", always_xy=True)
