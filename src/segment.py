@@ -4,7 +4,9 @@ from importlib import import_module
 from pathlib import Path
 
 import pdal
+from pointcloudlib import AHN5
 
+from models import AOIPolygon
 from utils import get_logger, timed
 
 logger = get_logger(name="Classify")
@@ -65,7 +67,7 @@ AHN_VEGETATION_CLASS = 5
 
 
 @timed("Vegetation classification with Myria3D")
-def classify_vegetation_myria3d(input_path: Path, output_path: Path):
+def classify_vegetation_myria3d(input_path: Path, output_path: Path, vegetation_proba_threshold_pct: float):
     # Ensure vendored Myria3D package is importable from the workspace checkout.
     sys.path.insert(0, str(MYRIA3D_ROOT))
 
@@ -112,7 +114,8 @@ def classify_vegetation_myria3d(input_path: Path, output_path: Path):
         output_path=output_path,
         overig_class=AHN_OVERIG_CLASS,
         vegetation_class=AHN_VEGETATION_CLASS,
-        predicted_channel="PredictedClassification",
+        vegetation_proba_channel=MYRIA3D_PROBAS[0],
+        vegetation_proba_threshold_pct=vegetation_proba_threshold_pct,
     )
 
     logger.info(f"Myria3D vegetation prediction saved to: {output_path}")
@@ -125,11 +128,14 @@ def apply_myria3d_vegetation_to_ahn_overig(
     output_path: Path,
     overig_class: int,
     vegetation_class: int,
-    predicted_channel: str = "PredictedClassification",
+    vegetation_proba_channel: str,
+    vegetation_proba_threshold_pct: float,
 ):
-    """Promote only AHN `overig` points to vegetation in the Classification field."""
+    """Promote only AHN `overig` points to vegetation when vegetation proba exceeds threshold."""
 
-    assign_rule = f"Classification={vegetation_class} WHERE (Classification=={overig_class} && {predicted_channel}=={vegetation_class})"
+    threshold = vegetation_proba_threshold_pct / 100.0
+
+    assign_rule = f"Classification={vegetation_class} WHERE (Classification=={overig_class} && {vegetation_proba_channel}>{threshold})"
     pipeline_steps = [
         {"type": "readers.copc", "filename": str(input_path)},
         {"type": "filters.assign", "value": [assign_rule]},
@@ -170,18 +176,77 @@ def rescale_ahn_colors(input_path: Path, output_path: Path):
     logger.info(f"Rescaled colors saved to: {output_path}")
 
 
-if __name__ == "__main__":
-    name = sys.argv[1]
-    classification_method = sys.argv[2]  # Options: "myria3d", "rule-based"
-    logger.info(f"Starting vegetation classification in mode: {classification_method}")
+def run_test_myria3d_threshold_sweep(percentages: list, folder_name: str) -> None:
+    run_folder = Path("data") / folder_name
+    run_folder.mkdir(parents=True, exist_ok=True)
 
-    run_folder = Path("data") / name
+    aoi_path = run_folder / "aoi.geojson"
+    if not (run_folder / "aoi.geojson").exists():
+        aoi = AOIPolygon.get_from_user(title=f"Draw AOI for {folder_name}")
+        aoi.save_to_file(aoi_path, crs="EPSG:4326")
+        logger.info(f"Saved AOI to: {aoi_path}")
+    else:
+        aoi = AOIPolygon.get_from_file(aoi_path)
+        logger.info(f"Loaded existing AOI from: {aoi_path}")
+
     input_copc_path = run_folder / "input.copc.laz"
     rescaled_path = run_folder / "rescaled.copc.laz"
-    output_classified_path = run_folder / "classified.copc.laz"
 
-    if classification_method == "myria3d":
-        rescale_ahn_colors(input_path=input_copc_path, output_path=rescaled_path)
-        classify_vegetation_myria3d(input_path=rescaled_path, output_path=output_classified_path)
+    aoi_rd = aoi.to_crs("EPSG:28992")
+    ahn5 = AHN5(data_dir=run_folder)
+    fetch_result = ahn5.fetch(aoi=aoi_rd.polygon, aoi_crs=aoi_rd.crs, output_path=input_copc_path)
+    if not fetch_result or not fetch_result.exists():
+        raise RuntimeError("Failed to fetch AHN5 data for selected AOI.")
+    logger.info(f"Downloaded AHN5 data to: {input_copc_path}")
+
+    rescale_ahn_colors(input_path=input_copc_path, output_path=rescaled_path)
+
+    for threshold in percentages:
+        threshold_label = int(threshold)
+        threshold_input_path = run_folder / f"rescaled_threshold_{threshold_label}.copc.laz"
+        output_classified_path = run_folder / f"classified_threshold_{threshold_label}.copc.laz"
+
+        # Myria3D saves using the input basename in output_dir; isolate each sweep run
+        # so the shared rescaled source is never overwritten across thresholds.
+        pdal.Pipeline(
+            json.dumps({
+                "pipeline": [
+                    {"type": "readers.copc", "filename": str(rescaled_path)},
+                    {"type": "writers.copc", "filename": str(threshold_input_path)},
+                ]
+            })
+        ).execute()
+
+        classify_vegetation_myria3d(
+            input_path=threshold_input_path,
+            output_path=output_classified_path,
+            vegetation_proba_threshold_pct=threshold,
+        )
+        logger.info(f"Saved classified output for {threshold_label}% threshold to: {output_classified_path}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        logger.info("No CLI arguments provided. Running Myria3D threshold sweep workflow.")
+        percentages = [50.0, 70.0, 90.0, 99.0]
+        folder_name = "test_myria3d"
+        run_test_myria3d_threshold_sweep(percentages=percentages, folder_name=folder_name)
     else:
-        classify_vegetation_rule_based(input_copc_path, output_classified_path)
+        if len(sys.argv) < 3:
+            raise SystemExit("Usage: python src/segment.py <run_name> <myria3d|rule-based> [threshold_pct]")
+
+        name = sys.argv[1]
+        classification_method = sys.argv[2]  # Options: "myria3d", "rule-based"
+        vegetation_proba_threshold_pct = float(sys.argv[3]) if len(sys.argv) > 3 else 90.0
+        logger.info(f"Starting vegetation classification in mode: {classification_method}")
+
+        run_folder = Path("data") / name
+        input_copc_path = run_folder / "input.copc.laz"
+        rescaled_path = run_folder / "rescaled.copc.laz"
+        output_classified_path = run_folder / "classified.copc.laz"
+
+        if classification_method == "myria3d":
+            rescale_ahn_colors(input_path=input_copc_path, output_path=rescaled_path)
+            classify_vegetation_myria3d(input_path=rescaled_path, output_path=output_classified_path, vegetation_proba_threshold_pct=vegetation_proba_threshold_pct)
+        else:
+            classify_vegetation_rule_based(input_copc_path, output_classified_path)

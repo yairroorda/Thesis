@@ -156,8 +156,9 @@ def prepare_project(config: ProjectConfig) -> ProjectPaths:
 
     logger.info(f"Classifying vegetation using method: {config.classification_method}")
     if config.classification_method == "myria3d":
+        logger.debug(f"Applying Myria3D vegetation probability threshold: {config.myria3d_vegetation_prob_threshold_pct:.1f}%")
         result = subprocess.run(
-            ["pixi", "run", "-e", "myria3d", "python", "src/segment.py", paths.name, config.classification_method],
+            ["pixi", "run", "-e", "myria3d", "python", "src/segment.py", paths.name, config.classification_method, str(config.myria3d_vegetation_prob_threshold_pct)],
             check=False,
         )
         if result.returncode != 0:

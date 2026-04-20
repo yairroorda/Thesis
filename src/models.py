@@ -29,6 +29,7 @@ class ProjectConfig:
     name: str = "test_project"
     dataset: list[str] = field(default_factory=lambda: ["AHN6", "AHN5"])
     classification_method: str = "myria3d"
+    myria3d_vegetation_prob_threshold_pct: float = 90.0
     profile: str = "testing"
     aoi_source: Path | None = None
     overwrite: bool = False
