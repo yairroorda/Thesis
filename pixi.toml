@@ -33,7 +33,7 @@ pipeline = { cmd = "python src/main.py", description = "Run full pipeline" }
 channels = ["pytorch", "nvidia", "pyg", "conda-forge"]
 
 [feature.myria3d.dependencies]
-python = "3.9.*"
+python = "3.10.*"
 pip = "*"
 setuptools = "<81"
 pytorch = { version = "2.1.*", channel = "pytorch" }
@@ -55,6 +55,8 @@ laspy = ">=2.6.1,<3"
 [feature.myria3d.pypi-dependencies]
 hydra-core = "==1.1.*"
 ign-pdal-tools = ">=1.5.2"
+pointcloudlib = { path = "../pointcloudlib", editable = true }
+
 
 [feature.myria3d.tasks]
 classify = { cmd = "python src/segment.py", description = "Run Myria3D classification step only" }
