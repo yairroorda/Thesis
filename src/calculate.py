@@ -750,13 +750,11 @@ def iter_merge_2d_viewshed(runs: Iterable[RunPaths], output_path: Path) -> Path:
     datasets = [rasterio.open(tif) for tif in tiffs]
     mosaic, out_transform = merge(datasets, method="max")
     out_meta = datasets[0].meta.copy()
-    out_meta.update(
-        {
-            "height": mosaic.shape[1],
-            "width": mosaic.shape[2],
-            "transform": out_transform,
-        }
-    )
+    out_meta.update({
+        "height": mosaic.shape[1],
+        "width": mosaic.shape[2],
+        "transform": out_transform,
+    })
     with rasterio.open(output_path, "w", **out_meta) as dest:
         dest.write(mosaic)
         logger.info(f"Merged viewshed saved to: {output_path}")

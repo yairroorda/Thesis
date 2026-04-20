@@ -48,14 +48,12 @@ def generate_benchmark_aois(
             curr_size = float(rng.uniform(size_min, size_max))
             half = curr_size / 2
             angle = float(rng.uniform(0, 360))
-            square = Polygon(
-                [
-                    (x - half, y - half),
-                    (x + half, y - half),
-                    (x + half, y + half),
-                    (x - half, y + half),
-                ]
-            )
+            square = Polygon([
+                (x - half, y - half),
+                (x + half, y - half),
+                (x + half, y + half),
+                (x - half, y + half),
+            ])
             aoi = AOIPolygon(
                 affinity.rotate(square, angle, origin="center"),
                 crs=working_area.crs,
