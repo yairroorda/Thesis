@@ -99,14 +99,12 @@ def classify_vegetation_myria3d(input_path: Path, output_path: Path):
 
     # Myria3D writes with pdal Writer.las, convert to COPC directly to output_path.
     pdal.Pipeline(
-        json.dumps(
-            {
-                "pipeline": [
-                    {"type": "readers.las", "filename": str(input_path)},
-                    {"type": "writers.copc", "filename": str(output_path)},
-                ]
-            }
-        )
+        json.dumps({
+            "pipeline": [
+                {"type": "readers.las", "filename": str(input_path)},
+                {"type": "writers.copc", "filename": str(output_path)},
+            ]
+        })
     ).execute()
 
     apply_myria3d_vegetation_to_ahn_overig(

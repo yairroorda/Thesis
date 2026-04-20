@@ -4,7 +4,6 @@ import time
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
-from typing import Union
 
 import numpy as np
 from rich.console import Console
@@ -65,7 +64,7 @@ def get_logger(name="thesis", logfile_path=None, level=None):
     return logger
 
 
-def prepare_run_folder(base_dir: Union[str, Path], run_name: str, overwrite: bool = False) -> Path:
+def prepare_run_folder(base_dir: str | Path, run_name: str, overwrite: bool = False) -> Path:
     """Create isolated run folder data/<run_name>, with overwrite support."""
     folder = Path(base_dir) / run_name
     if folder.exists():

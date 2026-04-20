@@ -4,31 +4,32 @@
 
 ```text
 .
-|-- src/                        # Main application code
-|   |-- main.py                 # Entry point for the full pipeline
+|-- src/                            # Main application code
+|   |-- main.py                     # Entry point for the full pipeline
 |   |-- calculate.py
-|-- calculations
 |   |-- enhance_facades.py
+|   |-- evaluate.py
 |   |-- gui.py
+|   |-- models.py
+|   |-- modify_canopy.py
 |   |-- query_copc.py
+|   |-- query_threedbag.py
+|   |-- sample_threedbag.py
 |   |-- segment.py
-|   |-- utils.py                
-|   |-- visualize.py
-|   `-- __pycache__/
+|   |-- tune_building_threshold.py
+|   |-- utils.py
+|   `-- visualize.py
 |-- third_party/
-|   `-- myria3d/                # Vendored Myria3D deep learning model
-|       |-- myria3d/
-|       |-- configs/
-|       |-- trained_model_assets/
-|       `-- LICENSE
-|-- data/                       # Output directory with isolated run folders
-|   |-- run1/
-|   |   |-- input.copc.laz
-|   |   |-- viewshed.tif
-|   |   |-- metadata.json
-|   |   `-- run.log
-|   `-- run2/
-|-- pixi.toml                   # Pixi workspace and environment configuration
+|   `-- myria3d/                    # Vendored Myria3D deep learning model
+|-- data/                           # Sample datasets and generated run outputs
+|   `- project_1/                   # Project folders (one per dataset or aoi)
+|       `-- run_1/                  # Run folders contain outputs for a single pipeline execution
+|           |-- viewshed.copc.laz   # Point cloud outputs in LAZ format
+|           |-- metadata.json       # Metadata outputs
+|           `-- ...                 # Other outputs (e.g. logs, intermediate files) depending on profile
+|-- config.toml                     # Runtime configuration and profile behavior
+|-- pixi.toml                       # Pixi workspace and environment configuration
+|-- pixi.lock
 |-- README.md
 |-- LICENSE
 `-- .gitignore
@@ -38,7 +39,7 @@
 
 - **`src/`** — Main Python source code for the pipeline
 - **`third_party/myria3d/`** — Vendored [Myria3D](https://github.com/IGNF/myria3d) model for deep learning-based vegetation classification
-- **`data/`** — Contains run folders. Each run writes all files into `data/<run_name>/`.
+- **`data/`** — Contains sample/reference datasets and project folders. Pipeline outputs are written to `data/<project_name>/<run_name>/`.
 
 ## Installation & Setup
 
@@ -129,7 +130,7 @@ The full pipeline will run and generate output files in the `data/` directory.
 
 ### Output and profiles
 
-- Outputs are stored in `data/<run_name>/` (one folder per run).
+- Outputs are stored in `data/<project_name>/<run_name>/` (one folder per run).
 - File names inside a run folder are stable, for example: `input.copc.laz`, `viewshed.tif`, `metadata.json`, `run.log`.
 - If run name is not set, the application uses `tmp`.
 - If a run folder already exists, the pipeline raises an error unless overwrite is enabled.

@@ -65,14 +65,15 @@ def filter_buildings(input_path: Path, output_path: Path) -> Path:
 
 def main():
     # setup run
-    aoi_path = Path("data/Delft_bouwkunde/aoi.geojson")
+    project_folder = Path("data/Delft_bouwkunde")
+    aoi_path = project_folder / "aoi.geojson"
     aoi = AOIPolygon.get_from_file(aoi_path).to_crs("EPSG:28992")
 
-    target_path = Path("data/Delft_bouwkunde/target_point.copc.laz")
+    target_path = project_folder / "target_point.copc.laz"
     target = Point.get_from_file(target_path)
 
     run_name = "tune_building_threshold"
-    run_folder = Path("data") / run_name
+    run_folder = project_folder / run_name
     run_folder.mkdir(parents=True, exist_ok=True)
 
     grid_resolution = 1.0
@@ -152,5 +153,5 @@ def main():
     )
 
 
-if __name__ == "__main__":  #
+if __name__ == "__main__":
     main()

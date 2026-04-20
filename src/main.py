@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 import tomllib
+from pointcloudlib import AHN1, AHN2, AHN3, AHN4, AHN5, AHN6, CanElevation, IGNLidarHD, ProviderChain
+
 from calculate import (
     Point,
     calculate_flight_height,
@@ -25,8 +27,6 @@ from models import AOIPolygon, ProjectConfig, ProjectPaths, RunConfig, RunPaths
 from segment import classify_vegetation_rule_based
 from utils import get_logger, timed
 from visualize import save_viewshed_as_tif, save_viewshed_as_voxel_grid
-
-from pointcloudlib import AHN1, AHN2, AHN3, AHN4, AHN5, AHN6, CanElevation, IGNLidarHD, ProviderChain
 
 logger = get_logger(name="Main")
 

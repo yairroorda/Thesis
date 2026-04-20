@@ -6,10 +6,11 @@ from typing import Literal
 import geopandas as gpd
 import numpy as np
 import pdal
-from gui import make_map
 from pyproj import Transformer
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon as ShapelyPolygon
+
+from gui import make_map
 
 RadiusMode = Literal["fixed", "widening_linear"]
 _TO_RD = Transformer.from_crs("EPSG:4326", "EPSG:28992", always_xy=True)
@@ -57,8 +58,7 @@ class ProjectPaths:
         self.folder = base_dir / project_name
         self.folder.mkdir(parents=True, exist_ok=True)
 
-        self.runs_folder = self.folder / "runs"
-        self.runs_folder.mkdir(parents=True, exist_ok=True)
+        self.runs_folder = self.folder
 
         self.aoi = self.folder / "aoi.geojson"
         self.input_copc = self.folder / "input.copc.laz"
@@ -177,13 +177,11 @@ class Point:
         """Read first point from COPC/LAZ and return it as a Point."""
         reader_type = "readers.copc" if ".copc" in path.name.lower() else "readers.las"
         pipeline = pdal.Pipeline(
-            json.dumps(
-                {
-                    "pipeline": [
-                        {"type": reader_type, "filename": str(path)},
-                    ]
-                }
-            )
+            json.dumps({
+                "pipeline": [
+                    {"type": reader_type, "filename": str(path)},
+                ]
+            })
         )
         count = pipeline.execute()
         if count == 0 or not pipeline.arrays:
