@@ -8,8 +8,7 @@ import rasterio
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
 
-from models import ProjectPaths, RunConfig, RunPaths
-from models import AOIPolygon
+from models import AOIPolygon, ProjectPaths, RunConfig, RunPaths
 from utils import get_logger, timed
 
 logger = get_logger("Visualize")
@@ -100,13 +99,29 @@ def save_viewshed_as_voxel_grid(
     """
     pipeline = pdal.Pipeline(json.dumps({"pipeline": [{"type": "readers.copc", "filename": str(run_paths.output_viewshed_copc_3d)}]}))
     pipeline.execute()
-    points = np.concatenate(pipeline.arrays)
-    x_coords, y_coords, z_coords = points["X"], points["Y"], points["Z"]
-    visibility_values = points["Visibility"]
+    chunks = pipeline.arrays
+    if not chunks:
+        arr = np.empty(0, dtype=[("X", "f8"), ("Y", "f8"), ("Z", "f8"), ("Visibility", "f4")])
+        write_pipeline = {
+            "pipeline": [
+                {
+                    "type": "writers.copc",
+                    "filename": str(run_paths.output_viewshed_voxel_grid_3d),
+                    "forward": "all",
+                    "extra_dims": "all",
+                }
+            ]
+        }
+        pdal.Pipeline(json.dumps(write_pipeline), arrays=[arr]).execute()
+        logger.info(f"Saved 3D viewshed voxel grid in COPC format to {run_paths.output_viewshed_voxel_grid_3d}")
+        return
 
-    min_x, max_x = np.min(x_coords), np.max(x_coords)
-    min_y, max_y = np.min(y_coords), np.max(y_coords)
-    min_z, max_z = np.min(z_coords), np.max(z_coords)
+    min_x = min(np.min(chunk["X"]) for chunk in chunks)
+    max_x = max(np.max(chunk["X"]) for chunk in chunks)
+    min_y = min(np.min(chunk["Y"]) for chunk in chunks)
+    max_y = max(np.max(chunk["Y"]) for chunk in chunks)
+    min_z = min(np.min(chunk["Z"]) for chunk in chunks)
+    max_z = max(np.max(chunk["Z"]) for chunk in chunks)
     width = int(np.floor((max_x - min_x) / run_cfg.resolution)) + 1
     height = int(np.floor((max_y - min_y) / run_cfg.resolution)) + 1
     depth = int(np.floor((max_z - min_z) / run_cfg.resolution)) + 1
@@ -122,26 +137,50 @@ def save_viewshed_as_voxel_grid(
         dtype=np.uint8,
     ).astype(bool)
 
-    voxel_data = np.full((depth, height, width), -1.0, dtype=np.float32)
+    voxel_max: dict[int, float] = {}
+    for chunk in chunks:
+        cols = np.floor((chunk["X"] - min_x) / run_cfg.resolution).astype(np.int64)
+        rows = np.floor((max_y - chunk["Y"]) / run_cfg.resolution).astype(np.int64)
+        depths = np.floor((chunk["Z"] - min_z) / run_cfg.resolution).astype(np.int64)
+        vis = chunk["Visibility"]
 
-    cols = np.floor((x_coords - min_x) / run_cfg.resolution).astype(np.int64)
-    rows = np.floor((max_y - y_coords) / run_cfg.resolution).astype(np.int64)
-    depths = np.floor((z_coords - min_z) / run_cfg.resolution).astype(np.int64)
+        valid = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width) & (depths >= 0) & (depths < depth)
+        valid &= aoi_mask[rows.clip(0, height - 1), cols.clip(0, width - 1)]
 
-    valid = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width) & (depths >= 0) & (depths < depth)
-    valid &= aoi_mask[rows.clip(0, height - 1), cols.clip(0, width - 1)]
+        if not np.any(valid):
+            continue
 
-    flat_indices = (depths[valid] * height * width) + (rows[valid] * width) + cols[valid]
-    np.maximum.at(voxel_data.ravel(), flat_indices, visibility_values[valid])
+        flat_indices = (depths[valid] * height * width) + (rows[valid] * width) + cols[valid]
+        valid_vis = vis[valid]
+        order = np.argsort(flat_indices, kind="mergesort")
+        flat_sorted = flat_indices[order]
+        vis_sorted = valid_vis[order]
+        unique_flat, first_idx = np.unique(flat_sorted, return_index=True)
+        chunk_max = np.maximum.reduceat(vis_sorted, first_idx)
+
+        for flat, value in zip(unique_flat.tolist(), chunk_max.tolist()):
+            existing = voxel_max.get(flat)
+            if existing is None or value > existing:
+                voxel_max[flat] = float(value)
 
     if file_type == "copc":
-        mask = voxel_data >= 0
-        z_idx, y_idx, x_idx = np.where(mask)
-        arr = np.empty(mask.sum(), dtype=[("X", "f8"), ("Y", "f8"), ("Z", "f8"), ("Visibility", "f4")])
-        arr["X"] = min_x + (x_idx + 0.5) * run_cfg.resolution
-        arr["Y"] = max_y - (y_idx + 0.5) * run_cfg.resolution
-        arr["Z"] = min_z + (z_idx + 0.5) * run_cfg.resolution
-        arr["Visibility"] = voxel_data[mask]
+        if not voxel_max:
+            arr = np.empty(0, dtype=[("X", "f8"), ("Y", "f8"), ("Z", "f8"), ("Visibility", "f4")])
+        else:
+            unique_flat = np.fromiter(voxel_max.keys(), dtype=np.int64)
+            max_vis = np.fromiter(voxel_max.values(), dtype=np.float32)
+
+            voxels_per_layer = height * width
+            z_idx = unique_flat // voxels_per_layer
+            rem = unique_flat % voxels_per_layer
+            y_idx = rem // width
+            x_idx = rem % width
+
+            arr = np.empty(unique_flat.size, dtype=[("X", "f8"), ("Y", "f8"), ("Z", "f8"), ("Visibility", "f4")])
+            arr["X"] = min_x + (x_idx + 0.5) * run_cfg.resolution
+            arr["Y"] = max_y - (y_idx + 0.5) * run_cfg.resolution
+            arr["Z"] = min_z + (z_idx + 0.5) * run_cfg.resolution
+            arr["Visibility"] = max_vis
 
         write_pipeline = {
             "pipeline": [
@@ -159,6 +198,12 @@ def save_viewshed_as_voxel_grid(
     elif file_type == "vti":
         import pyvista as pv
 
+        voxel_data = np.full((depth, height, width), -1.0, dtype=np.float32)
+        if voxel_max:
+            flat_indices = np.fromiter(voxel_max.keys(), dtype=np.int64)
+            max_vis = np.fromiter(voxel_max.values(), dtype=np.float32)
+            voxel_data.ravel()[flat_indices] = max_vis
+
         grid = pv.ImageData(
             dimensions=(width + 1, height + 1, depth + 1),
             spacing=(run_cfg.resolution, run_cfg.resolution, run_cfg.resolution),
@@ -171,13 +216,20 @@ def save_viewshed_as_voxel_grid(
 
 
 if __name__ == "__main__":
-    # Example usage:
+    project_root = Path("data/evaluate_vegetation_influence_veg_eval_01_1776769328")
+    run_folder = project_root / "run_01_without"
+
+    project_paths = ProjectPaths("evaluate_vegetation_influence_veg_eval_01_1776769328")
+    project_paths.aoi = project_root / "aoi.geojson"
+
+    run_cfg = RunConfig(resolution=2.0)
+    run_paths = RunPaths(project_paths, "run_01_without")
+    run_paths.output_viewshed_copc_3d = run_folder / "viewshed_3d.copc.laz"
+    run_paths.output_viewshed_voxel_grid_3d = run_folder / "viewshed_3d.copc_voxel.laz"
 
     save_viewshed_as_voxel_grid(
-        input_path=Path("data/Delft_bouwkunde/viewshed_3d.copc.laz"),
-        aoi=AOIPolygon.get_from_file(Path("data/Delft_bouwkunde/aoi.geojson")),
-        resolution=2.0,
+        run_paths=run_paths,
+        run_cfg=run_cfg,
+        project_paths=project_paths,
         file_type="copc",
-        output_path=Path("data/Delft_bouwkunde/viewshed_3d_voxel.copc.laz"),
-        input_crs="EPSG:28992",
     )
