@@ -18,12 +18,10 @@ import pdal
 from scipy.spatial import cKDTree
 from shapely import concave_hull
 from shapely.geometry import MultiPoint
-from shapely.geometry import Polygon as ShapelyPolygon
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
-from calculate import download_dtm_raster
-from models import AOIPolygon
+from calculate import load_ground_points
 from utils import get_logger, timed
 
 logger = get_logger(name="EnhanceFacades")
@@ -110,8 +108,9 @@ def boundary_from_cluster(
 
 def generate_facade_points(
     boundary_verts: np.ndarray,
-    dtm_raster,
     point_spacing: float,
+    ground_tree: cKDTree,
+    ground_z_all: np.ndarray,
 ) -> np.ndarray:
     """
     Generate dense vertical facade points along the boundary edges of one building.
@@ -119,11 +118,11 @@ def generate_facade_points(
     For each consecutive pair of boundary vertices the function:
     - walks along the edge at *point_spacing* intervals,
     - interpolates the roof Z between the two endpoints,
-    - samples the DTM to get the ground Z,
+    - samples ground Z using pre-loaded KD-tree,
     - creates a vertical column of points from roof Z down to ground Z.
     """
     all_points: list[np.ndarray] = []
-    mean_ground = float(dtm_raster.mean(skipna=True).values)
+    samples: list[tuple[float, float, float]] = []
     n_verts = len(boundary_verts)
 
     for i in range(n_verts):
@@ -139,36 +138,24 @@ def generate_facade_points(
         t_vals = np.linspace(0.0, 1.0, n_steps, endpoint=False)
 
         for t in t_vals:
-            x = p1[0] + t * edge_vec[0]
-            y = p1[1] + t * edge_vec[1]
-            z_roof = p1[2] + t * (p2[2] - p1[2])
+            x = float(p1[0] + t * edge_vec[0])
+            y = float(p1[1] + t * edge_vec[1])
+            z_roof = float(p1[2] + t * (p2[2] - p1[2]))
+            if np.isfinite(z_roof):
+                samples.append((x, y, z_roof))
 
-            if not np.isfinite(z_roof):
-                continue
+    if not samples:
+        return np.empty((0, 3))
 
-            # Ground elevation from DTM
-            try:
-                z_ground = float(dtm_raster.sel(x=x, y=y, method="nearest").values)
-            except Exception:
-                z_ground = mean_ground
+    ground_z = ground_z_all[ground_tree.query(np.array([(x, y) for x, y, _ in samples], dtype=np.float64), k=1, workers=-1)[1]]
 
-            if not np.isfinite(z_ground):
-                z_ground = mean_ground
-
-            if not np.isfinite(z_ground) or z_roof <= z_ground:
-                continue
-
-            n_vert = max(int(np.ceil((z_roof - z_ground) / point_spacing)), 1)
-            z_vals = np.linspace(z_ground, z_roof, n_vert, endpoint=True)
-
-            col = np.column_stack(
-                (
-                    np.full(n_vert, x),
-                    np.full(n_vert, y),
-                    z_vals,
-                )
-            )
-            all_points.append(col)
+    for (x, y, z_roof), z_ground in zip(samples, ground_z):
+        if z_roof <= z_ground:
+            continue
+        n_vert = max(int(np.ceil((z_roof - z_ground) / point_spacing)), 1)
+        z_vals = np.linspace(z_ground, z_roof, n_vert, endpoint=True)
+        col = np.column_stack((np.full(n_vert, x), np.full(n_vert, y), z_vals))
+        all_points.append(col)
 
     if not all_points:
         return np.empty((0, 3))
@@ -180,14 +167,12 @@ def build_structured_array(coords: np.ndarray, classification: int = 6) -> np.nd
     Build a PDAL-compatible structured numpy array from (M, 3) XYZ coordinates.
     """
     n = len(coords)
-    dtype = np.dtype(
-        [
-            ("X", np.float64),
-            ("Y", np.float64),
-            ("Z", np.float64),
-            ("Classification", np.uint8),
-        ]
-    )
+    dtype = np.dtype([
+        ("X", np.float64),
+        ("Y", np.float64),
+        ("Z", np.float64),
+        ("Classification", np.uint8),
+    ])
     array = np.zeros(n, dtype=dtype)
     array["X"] = coords[:, 0]
     array["Y"] = coords[:, 1]
@@ -258,16 +243,8 @@ def generate_facades(
         logger.warning("No building clusters found, skipping facade generation.")
         return
 
-    # Download DTM raster once for the full aoi extent
-    aoi = AOIPolygon(
-        ShapelyPolygon.from_bounds(
-            roof_pts["X"].min(),
-            roof_pts["Y"].min(),
-            roof_pts["X"].max(),
-            roof_pts["Y"].max(),
-        )
-    )
-    dtm_raster = download_dtm_raster(aoi=aoi, buffer=5.0)
+    # Load ground points once for all buildings
+    ground_tree, ground_z = load_ground_points(input_path)
 
     # Calculate facade points for each building cluster and accumulate
     all_facade_coords: list[np.ndarray] = []
@@ -277,7 +254,7 @@ def generate_facades(
         if boundary is None:
             logger.debug(f"Cluster {label}: too small for boundary (n={len(cluster)}), skipping")
             continue
-        facade_coords = generate_facade_points(boundary, dtm_raster, point_spacing)
+        facade_coords = generate_facade_points(boundary, point_spacing, ground_tree=ground_tree, ground_z_all=ground_z)
         if facade_coords.size > 0:
             all_facade_coords.append(facade_coords)
 

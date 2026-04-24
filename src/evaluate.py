@@ -90,15 +90,14 @@ def random_target_point(aoi: AOIPolygon, z_range: tuple[float, float], seed: int
     raise RuntimeError("Could not find a target point within the AOI after 1000 attempts. Try changing the AOI or seed.")
 
 
-def center_target_point_hag(aoi: AOIPolygon, hag_m: float = 1.7) -> Point:
+def center_target_point_hag(aoi: AOIPolygon, input_path: Path = calc.DEFAULT_INPUT, hag_m: float = 1.7) -> Point:
     """Return an AOI-center target at a fixed height above ground (HAG) in EPSG:28992."""
     aoi_rd = aoi.to_crs("EPSG:28992") if aoi.crs != "EPSG:28992" else aoi
     center = aoi_rd.polygon.centroid
     if not aoi_rd.polygon.covers(center):
         center = aoi_rd.polygon.representative_point()
 
-    dtm = calc.download_dtm_raster(aoi_rd)
-    ground_z = float(calc.sample_dtm(dtm, [Point(float(center.x), float(center.y), 0.0)])[0])
+    ground_z = float(calc.sample_ground(input_path=input_path, points=[Point(float(center.x), float(center.y), 0.0)])[0])
     return Point(float(center.x), float(center.y), ground_z + hag_m)
 
 
@@ -208,7 +207,7 @@ def evaluate_vegetation_influence(
         project_paths = prepare_project(temp_config)
         input_vegetation_percentage = _vegetation_class_percentage(project_paths.facades_copc)
 
-        target = center_target_point_hag(aoi, hag_m=1.7)
+        target = center_target_point_hag(aoi, input_path=project_paths.facades_copc, hag_m=1.7)
         target.save_to_file(run_dir / "target.copc.laz")
 
         with_cfg = RunConfig(name=f"run_{index:02d}_with", target_source=run_dir / "target.copc.laz")

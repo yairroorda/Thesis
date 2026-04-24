@@ -5,8 +5,6 @@ name = "Thesis"
 platforms = ["linux-64"]
 version = "0.1.0"
 
-[dependencies]
-
 [feature.thesis]
 channels = ["conda-forge", "main", "r", "msys2"]
 
@@ -18,13 +16,12 @@ scipy = "1.16.1.*"
 tqdm = "4.67.3.*"
 pip = "26.0.1.*"
 rich = ">=14.3.3,<15"
-owslib = ">=0.35.0,<0.36"
 
 [feature.thesis.pypi-dependencies]
 tkintermapview = "==1.29"
-nlmod = "==0.11.2"
 pyvista = ">=0.47.3, <0.48"
 pointcloudlib = { path = "../pointcloudlib", editable = true }
+rasterio = ">=1.5.0, <2"
 
 [feature.thesis.tasks]
 pipeline = { cmd = "python src/main.py", description = "Run full pipeline" }

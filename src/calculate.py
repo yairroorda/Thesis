@@ -5,13 +5,11 @@ from typing import Callable, Iterable, Literal
 
 import numpy as np
 import pdal
-from nlmod.read import ahn
 from pyproj import Transformer
 from scipy.spatial import cKDTree
 from shapely import contains
 from shapely import points as shapely_points
 from shapely.geometry import Point as ShapelyPoint
-from shapely.geometry import Polygon as ShapelyPolygon
 from tqdm import tqdm
 
 from models import AOIPolygon, Cylinder, Point, RunPaths, Segment
@@ -50,45 +48,39 @@ def _validate_points_in_aoi(points_xy: list[tuple[float, float]], aoi: AOIPolygo
             raise ValueError(f"{label} is outside the AOI. Please select a point inside the AOI.")
 
 
-def download_dtm_raster(aoi: AOIPolygon, buffer: float = 2.0) -> ahn.AhnRaster:
-    """
-    Download the AHN DTM raster for a given polygon area.
-    """
-    logger = get_logger("Utils")
-    min_x, min_y, max_x, max_y = aoi.bounds
-    buffered_extent = [
-        min_x - buffer,
-        max_x + buffer,
-        min_y - buffer,
-        max_y + buffer,
-    ]
-    logger.debug(f"Downloading AHN DTM for extent {buffered_extent}")
-    try:
-        return ahn.download_latest_ahn_from_wcs(buffered_extent, identifier="dtm_05m")
-    except Exception as e:
-        raise RuntimeError(f"Failed to download AHN DTM: {e}")
+def sample_ground(input_path: Path, points: list[Point], k: int = 1, ground_tree: cKDTree | None = None, ground_z: np.ndarray | None = None) -> np.ndarray:
+    """Interpolate ground Z from nearby Class-2 points using KD-tree (loads on demand if not provided)."""
+
+    if ground_tree is None or ground_z is None:
+        ground_tree, ground_z = load_ground_points(input_path)
+
+    query_xy = np.array([(p.x, p.y) for p in points], dtype=np.float64)
+
+    _, indices = ground_tree.query(query_xy, k=k, workers=-1)
+
+    return ground_z[indices]
 
 
-def sample_dtm(dtm_raster, points: list[Point]) -> np.ndarray:
-    """
-    Sample ground elevations from a DTM raster at the given (x, y) coordinates.
-    """
-    mean_val = dtm_raster.mean(skipna=True).values
-    ground = np.full(len(points), mean_val, dtype=np.float64)
+def load_ground_points(input_path: Path) -> tuple[cKDTree, np.ndarray]:
+    """Load all Class-2 ground points from COPC and build KD-tree. Cache results."""
 
-    for i, point in enumerate(points):
-        try:
-            val = dtm_raster.sel(x=point.x, y=point.y, method="nearest").values
-        except Exception:
-            val = np.nan
+    pipeline = pdal.Pipeline(
+        json.dumps({
+            "pipeline": [
+                {"type": "readers.copc", "filename": str(input_path)},
+                {"type": "filters.expression", "expression": f"Classification == {CLASS_TERRAIN}"},
+            ]
+        })
+    )
+    pipeline.execute()
 
-        if np.isnan(val):
-            # fill with previous valid value (or mean if first)
-            ground[i] = ground[i - 1] if i > 0 else mean_val
-        else:
-            ground[i] = val
+    ground = np.concatenate(pipeline.arrays)
 
-    return ground
+    ground_xy = np.column_stack((ground["X"], ground["Y"]))
+    ground_z = ground["Z"].astype(np.float64)
+
+    logger.info(f"Loaded {len(ground)} ground points from {input_path}")
+    return cKDTree(ground_xy), ground_z
 
 
 def generate_grid(Area: AOIPolygon, resolution: int, z_height: float = 0.0, two_d: bool = False) -> list[Point]:
@@ -592,42 +584,20 @@ def calculate_viewshed(
         write_to_copc(out_array, output_path)
 
 
-def hag_to_nap(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
+def hag_to_nap(points: list["Point"], input_path: Path = DEFAULT_INPUT) -> list["Point"]:
     """
     Converts a list of points from Height Above Ground (HAG) to NAP.
     """
-    xs = np.array([p.x for p in points])
-    ys = np.array([p.y for p in points])
-    aoi = AOIPolygon(ShapelyPolygon.from_bounds(xs.min(), ys.min(), xs.max(), ys.max()))
-    dtm = download_dtm_raster(aoi=aoi, buffer=buffer)
-    ground_levels = sample_dtm(dtm, points).tolist()
-    translated_points = []
-
-    for point, ground in zip(points, ground_levels):
-        # NAP = HAG + Ground
-        z_nap = point.z + ground
-        translated_points.append(Point(point.x, point.y, z_nap))
-
-    return translated_points
+    ground_levels = sample_ground(input_path=input_path, points=points)
+    return [Point(point.x, point.y, point.z + ground) for point, ground in zip(points, ground_levels)]
 
 
-def nap_to_hag(points: list["Point"], buffer: float = 2.0) -> list["Point"]:
+def nap_to_hag(points: list["Point"], input_path: Path = DEFAULT_INPUT) -> list["Point"]:
     """
     Converts a list of points from NAP to Height Above Ground (HAG).
     """
-    xs = np.array([p.x for p in points])
-    ys = np.array([p.y for p in points])
-    aoi = AOIPolygon(ShapelyPolygon.from_bounds(xs.min(), ys.min(), xs.max(), ys.max()))
-    dtm = download_dtm_raster(aoi=aoi, buffer=buffer)
-    ground_levels = sample_dtm(dtm, points).tolist()
-    translated_points = []
-
-    for point, ground in zip(points, ground_levels):
-        # HAG = NAP - Ground
-        z_hag = point.z - ground
-        translated_points.append(Point(point.x, point.y, z_hag))
-
-    return translated_points
+    ground_levels = sample_ground(input_path=input_path, points=points)
+    return [Point(point.x, point.y, point.z - ground) for point, ground in zip(points, ground_levels)]
 
 
 def calculate_viewshed_2d(
@@ -646,7 +616,7 @@ def calculate_viewshed_2d(
 ) -> tuple[list[Point], np.ndarray, np.ndarray]:
     # Sample points along the AOI boundary at the given resolution
     boundary_points = sample_polygon_boundary(aoi, sample_distance=resolution, z_height=z_offset)
-    grid_points_nap = hag_to_nap(boundary_points)
+    grid_points_nap = hag_to_nap(boundary_points, input_path=input_path)
     # export_grid_to_copc(grid_points_nap, output_path=Path("data/grid_points_2d_edges.copc.laz"))
 
     # For each point, calculate the visibility from the target to that point
@@ -715,11 +685,7 @@ def calculate_flight_height(
 
     # Calculate HAG
     grid_points = [Point(x, y, 0.0) for x, y in zip(flat_x, flat_y)]
-    try:
-        ground_elev = sample_dtm(download_dtm_raster(aoi, buffer=2.0), grid_points)
-    except Exception as e:
-        logger.warning(f"Could not sample DTM for HAG conversion: {e}")
-        ground_elev = np.zeros_like(flat_z)
+    ground_elev = sample_ground(input_path=input_path, points=grid_points)
     flat_hag = flat_z - ground_elev
 
     save_viewshed_as_tif(
