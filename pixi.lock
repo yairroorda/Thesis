@@ -350,8 +350,8 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/f2/98/7e6d147fd16a10a5f821db6e25f192265d6ecca3d82957a4fdd592cad49c/ratelim-0.1.6-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/50/8a/0ab1f7433a2a85d9e9aea5b1fbb333f3b09b309e7817309250b4b7b2cc7a/shapely-2.1.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/24/a9/b5395a61048b5ef530e10c627b63810c03be8522cd52eb026ad843dee6bd/tkintermapview-1.29-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/b0/70/d460bd685a170790ec89317e9bd33047988e4bce507b831f5db771e142de/tzdata-2026.1-py2.py3-none-any.whl
-      - pypi: ../pointcloudlib
+      - pypi: https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl
+      - pypi: ../cloudfetch
   thesis:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -643,7 +643,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/a3/bb/bbae36d06c0fd670e8373da67096cd57058b57c9bad7d92969b5e3b730af/scooby-0.11.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/24/a9/b5395a61048b5ef530e10c627b63810c03be8522cd52eb026ad843dee6bd/tkintermapview-1.29-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fc/e4/5317afdeaa4a66fe037e1fedcb6bde86b888b8227c89aba6c8ad2946e380/vtk-9.6.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      - pypi: ../pointcloudlib
+      - pypi: ../cloudfetch
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
   build_number: 20
@@ -1619,6 +1619,16 @@ packages:
   - click>=4.0
   - pytest-cov ; extra == 'test'
   requires_python: '>=2.7,!=3.0.*,!=3.1.*,!=3.2.*,<4'
+- pypi: ../cloudfetch
+  name: cloudfetch
+  version: 0.1.2
+  sha256: 4e59130cd2e4d81ace4d49286ddc2485c2f3b53f4ce644355a59768b91f86c35
+  requires_dist:
+  - geopandas
+  - shapely
+  - requests
+  - tkintermapview>=1.29
+  requires_python: '>=3.10'
 - conda: https://conda.anaconda.org/conda-forge/noarch/colorama-0.4.6-pyhd8ed1ab_1.conda
   sha256: ab29d57dc70786c1269633ba3dff20288b81664d3ff8d21af995742e2bb03287
   md5: 962b9857ee8e7018c22f2776ffa0b2d7
@@ -5951,16 +5961,6 @@ packages:
   version: 4.9.6
   sha256: e61adb1d5e5cb3441b4b7710bea7e4c12250ca49439228cc1021c00dcfac0917
   requires_python: '>=3.10'
-- pypi: ../pointcloudlib
-  name: pointcloudlib
-  version: 0.1.0
-  sha256: 24dd87f76b0f652eb2b481398d2be08949abf4edc367f0c3cfaef4be33daa739
-  requires_dist:
-  - geopandas
-  - shapely
-  - requests
-  - tkintermapview==1.29
-  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/2a/2d/d4bf65e47cea8ff2c794a600c4fd1273a7902f268757c531e0ee9f18aa58/pooch-1.9.0-py3-none-any.whl
   name: pooch
   version: 1.9.0
@@ -7503,10 +7503,10 @@ packages:
   purls: []
   size: 71316
   timestamp: 1772703963777
-- pypi: https://files.pythonhosted.org/packages/b0/70/d460bd685a170790ec89317e9bd33047988e4bce507b831f5db771e142de/tzdata-2026.1-py2.py3-none-any.whl
+- pypi: https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl
   name: tzdata
-  version: '2026.1'
-  sha256: 4b1d2be7ac37ceafd7327b961aa3a54e467efbdb563a23655fbfe0d39cfc42a9
+  version: '2026.2'
+  sha256: bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7
   requires_python: '>=2'
 - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
   sha256: 1d30098909076af33a35017eed6f2953af1c769e273a0626a04722ac4acaba3c

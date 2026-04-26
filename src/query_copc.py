@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pointcloudlib import AHN1, AHN2, AHN3, AHN4, AHN5, AHN6, CanElevation, IGNLidarHD, PointCloudProvider
+from cloudfetch import AHN1, AHN2, AHN3, AHN4, AHN5, AHN6, CanElevation, IGNLidarHD, PointCloudProvider
 
 from models import AOIPolygon
 from utils import get_logger

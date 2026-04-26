@@ -4,7 +4,7 @@ from importlib import import_module
 from pathlib import Path
 
 import pdal
-from pointcloudlib import AHN5
+from cloudfetch import AHN5
 
 from models import AOIPolygon
 from utils import get_logger, timed

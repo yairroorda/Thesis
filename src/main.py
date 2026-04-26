@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import tomllib
-from pointcloudlib import AHN1, AHN2, AHN3, AHN4, AHN5, AHN6, CanElevation, IGNLidarHD, ProviderChain
+from cloudfetch import AHN1, AHN2, AHN3, AHN4, AHN5, AHN6, CanElevation, IGNLidarHD, ProviderChain
 
 from calculate import (
     Point,

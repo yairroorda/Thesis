@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pdal
-from pointcloudlib import AHN4
+from cloudfetch import AHN4
 
 from calculate import calculate_viewshed_2d, export_grid_to_copc, generate_grid, sample_polygon_boundary
 from enhance_facades import generate_facades
