@@ -22,6 +22,7 @@ tkintermapview = "==1.29"
 pyvista = ">=0.47.3, <0.48"
 cloudfetch = { path = "../cloudfetch", editable = true }
 rasterio = ">=1.5.0, <2"
+rangehttpserver = ">=1.4.0, <2"
 
 [feature.thesis.tasks]
 pipeline = { cmd = "python src/main.py", description = "Run full pipeline" }
