@@ -7,3 +7,9 @@ __pycache__/
 .pixi/
 
 */pathfinding.py
+
+# Potree example files
+
+third_party/potree/examples
+third_party/potree/pointclouds
+third_party/potree/docs
