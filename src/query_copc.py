@@ -19,8 +19,9 @@ def demo_france():
 
 
 def demo_ahn():
+    logger.info("Starting AHN query demo...")
     providers: list[type[PointCloudProvider]] = [AHN6, AHN5, AHN4]
-    aoi_rdnew = AOIPolygon.get_from_file(Path("data/Groningen_plein.geojson"))
+    aoi_rdnew = AOIPolygon.get_from_file(Path("data/example_aoi/Groningen_plein.geojson"))
 
     for provider_cls in providers:
         provider = provider_cls(data_dir=DATA_DIR)
@@ -36,3 +37,4 @@ def demo_ahn():
 
 if __name__ == "__main__":
     demo_france()
+    demo_ahn()
