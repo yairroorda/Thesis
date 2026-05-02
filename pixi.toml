@@ -20,9 +20,9 @@ rich = ">=14.3.3,<15"
 [feature.thesis.pypi-dependencies]
 tkintermapview = "==1.29"
 pyvista = ">=0.47.3, <0.48"
-cloudfetch = { path = "../cloudfetch", editable = true }
 rasterio = ">=1.5.0, <2"
 rangehttpserver = ">=1.4.0, <2"
+cloudfetch = ">=0.1.2, <0.2"
 
 [feature.thesis.tasks]
 pipeline = { cmd = "python src/main.py", description = "Run full pipeline" }
@@ -53,7 +53,6 @@ laspy = ">=2.6.1,<3"
 [feature.myria3d.pypi-dependencies]
 hydra-core = "==1.1.*"
 ign-pdal-tools = ">=1.5.2"
-cloudfetch = { path = "../cloudfetch", editable = true }
 
 
 [feature.myria3d.tasks]
