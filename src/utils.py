@@ -49,7 +49,7 @@ def get_logger(name="thesis", logfile_path=None, level=None):
         handler = logging.StreamHandler()
         handler.setFormatter(formatter)
         logger.addHandler(handler)
-        logger.propagate = False
+        logger.propagate = True
     if logfile_path:
         file_target = str(Path(logfile_path).resolve())
         has_file_handler = any(isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == file_target for h in logger.handlers)
@@ -62,6 +62,15 @@ def get_logger(name="thesis", logfile_path=None, level=None):
     else:
         logger.setLevel(LOGGER_LEVEL)
     return logger
+
+
+# Configure cloudfetch logging
+_cloudfetch_logger = logging.getLogger("cloudfetch")
+_cloudfetch_logger.setLevel(logging.INFO)
+if not _cloudfetch_logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("[%(levelname)s] | %(name)s | %(message)s"))
+    _cloudfetch_logger.addHandler(_handler)
 
 
 def prepare_run_folder(base_dir: str | Path, run_name: str, overwrite: bool = False) -> Path:

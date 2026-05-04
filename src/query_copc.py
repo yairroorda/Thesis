@@ -20,7 +20,7 @@ def demo_france():
 
 def demo_ahn():
     logger.info("Starting AHN query demo...")
-    providers: list[type[PointCloudProvider]] = [AHN6, AHN5, AHN4]
+    providers = [AHN6, AHN5, AHN4]
     aoi_rdnew = AOIPolygon.get_from_file(Path("data/example_aoi/Groningen_plein.geojson"))
 
     for provider_cls in providers:
@@ -35,6 +35,18 @@ def demo_ahn():
             logger.warning(f"Skipping {provider_cls.__name__}: {exc}")
 
 
+def demo_can_elevation():
+    logger.info("Starting CanElevation query demo...")
+    if not (DATA_DIR / "example_aoi/Vancouver_aoi.geojson").exists():
+        aoi_wgs84 = AOIPolygon.get_from_user(title="Select AOI for CanElevation query")
+        aoi_wgs84.save_to_file(DATA_DIR / "example_aoi/Vancouver_aoi.geojson")
+    else:
+        aoi_wgs84 = AOIPolygon.get_from_file(DATA_DIR / "example_aoi/Vancouver_aoi.geojson")
+    provider = CanElevation(data_dir=DATA_DIR)
+    provider.fetch(aoi=aoi_wgs84.polygon, aoi_crs=aoi_wgs84.crs, output_path=DATA_DIR / "CanElevation.copc.laz")
+
+
 if __name__ == "__main__":
     demo_france()
     demo_ahn()
+    demo_can_elevation()
