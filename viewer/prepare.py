@@ -1,16 +1,26 @@
 """Preprocessing data for viewer"""
 
+import json
 from pathlib import Path
 
+import pdal
 
-def reproject_to_web_mercator(laz_file, output_file):
+
+def reproject_to_web_mercator(copc_file, output_file):
     """Reproject a LAZ file to Web Mercator (EPSG:3857) using PDAL."""
-    import json
 
-    import pdal
+    pipeline_steps = [
+        str(copc_file),
+        {"type": "filters.reprojection", "out_srs": "EPSG:3857", "in_srs": "EPSG:28992"},
+        {
+            "type": "writers.copc",
+            "filename": str(output_file),
+            "forward": "all",  # This is the magic key!
+            "extra_dims": "all",  # THE FIX: Keeps the actual per-point data
+        },
+    ]
 
-    # Define the PDAL pipeline
-    pipeline = {"pipeline": [laz_file, {"type": "filters.reprojection", "out_srs": "EPSG:3857", "in_srs": "EPSG:28992"}, output_file]}
+    pipeline = {"pipeline": pipeline_steps}
 
     # Convert the pipeline to JSON
     pipeline_json = json.dumps(pipeline)
@@ -20,11 +30,8 @@ def reproject_to_web_mercator(laz_file, output_file):
     p.execute()
 
 
-def remap_color_to_16_bit(laz_file: Path, output_file: Path):
+def remap_color_to_16_bit(copc_file: Path, output_file: Path):
     """Remap RGB color values from 8-bit to 16-bit to satisfy viewer requirements."""
-    import json
-
-    import pdal
 
     assign_values = []
     for channel in ["Red", "Green", "Blue"]:
@@ -32,15 +39,39 @@ def remap_color_to_16_bit(laz_file: Path, output_file: Path):
         assign_values.append(f"{channel}={channel}*256")
 
     pipeline_steps = [
-        {"type": "readers.copc", "filename": str(laz_file)},
+        {"type": "readers.copc", "filename": str(copc_file)},
         {"type": "filters.assign", "value": assign_values},
-        {"type": "writers.copc", "filename": str(output_file)},
+        {
+            "type": "writers.copc",
+            "filename": str(output_file),
+            "forward": "all",
+            "extra_dims": "all",
+        },
     ]
 
     pdal.Pipeline(json.dumps(pipeline_steps)).execute()
 
 
-def main(input_file: Path, color_8_bit: bool = False):
+def hijack_intensity(copc_file: Path, output_file: Path):
+    """Hijack the viewshed intensity channel for the viewer."""
+
+    pipeline_steps = [
+        str(copc_file),
+        {
+            "type": "filters.assign",
+            "value": ["Intensity = Visibility * 65535"],
+        },
+        {"type": "filters.reprojection", "out_srs": "EPSG:3857", "in_srs": "EPSG:28992"},
+        {
+            "type": "writers.copc",
+            "filename": str(output_file),
+        },
+    ]
+
+    pdal.Pipeline(json.dumps(pipeline_steps)).execute()
+
+
+def main(input_file: Path, color_8_bit: bool = False, hijack: bool = False):
     output_dir = Path("viewer/data")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -51,6 +82,9 @@ def main(input_file: Path, color_8_bit: bool = False):
     if color_8_bit:
         remap_color_to_16_bit(str(output_file), str(output_file))
 
+    if hijack:
+        hijack_intensity(str(output_file), str(output_file))
+
 
 if __name__ == "__main__":
     import argparse
@@ -58,6 +92,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Preprocess LAZ files for the viewer.")
     parser.add_argument("input_file", type=Path, help="Path to the input LAZ file.")
     parser.add_argument("--color-8-bit", action="store_true", help="Indicates if the input file has 8-bit color values.")
+    parser.add_argument("--hijack", action="store_true", help="Hijack the intensity channel to display visibility information.")
 
     args = parser.parse_args()
-    main(args.input_file, args.color_8_bit)
+    main(args.input_file, args.color_8_bit, args.hijack)
