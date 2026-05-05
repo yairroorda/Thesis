@@ -17,4 +17,8 @@ cd /home/yair/Desktop/Thesis/Thesis
 ```
 
 2. Open:
-- `http://localhost:8000/viewer`
+- `http://localhost:8000/`
+
+The repository root now redirects to `viewer/`, so the viewer opens directly.
+
+Use the demo dropdown to switch between Groningen and Delft. You can also open `http://localhost:8000/?demo=delft` directly.

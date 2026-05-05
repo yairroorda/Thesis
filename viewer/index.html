@@ -15,9 +15,37 @@
   <style>
     html, body { height: 100%; margin: 0; }
     #potree_render_area { width: 100%; height: 100%; }
+    #demo_picker {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(11, 15, 20, 0.88);
+      color: #e6edf3;
+      font: 13px/1.2 sans-serif;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      backdrop-filter: blur(8px);
+    }
+    #demo_picker select {
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      background: #161b22;
+      color: inherit;
+      padding: 6px 8px;
+    }
   </style>
 </head>
 <body>
+  <div id="demo_picker">
+    <select id="demo_select">
+      <option value="groningen">Groningen</option>
+      <option value="delft">Delft</option>
+      <option value="ventoux">Mont Ventoux</option>
+    </select>
+  </div>
   <div class="potree_container" style="position: absolute; width: 100%; height: 100%; left: 0; top: 0;">
     <div id="potree_render_area" style="background: #0b0f14;"></div>
     <div id="potree_sidebar_container"></div>
