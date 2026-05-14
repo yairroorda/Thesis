@@ -17,13 +17,12 @@ from calculate import (
     calculate_viewshed_for_grid,
     export_grid_to_copc,
     generate_grid,
-    iter_merge_2d_viewshed,
-    iter_merge_3d_viewshed,
     only_save_viewable_volume,
     sample_polygon_boundary,
 )
 from enhance_facades import generate_facades
 from models import AOIPolygon, ProjectConfig, ProjectPaths, RunConfig, RunPaths
+from pathfinding import calculate_optimal_route
 from segment import classify_vegetation_rule_based
 from utils import get_logger, timed
 from visualize import save_viewshed_as_tif, save_viewshed_as_voxel_grid
@@ -344,14 +343,14 @@ def remove_intermediate_files(project_paths: ProjectPaths, run_paths: RunPaths, 
 
 
 if __name__ == "__main__":
-    testname = "pcl_test"
+    testname = "test_pathfinding"
 
     if not Path(f"data/{testname}_aoi.geojson").exists():
         aoi = AOIPolygon.get_from_user(title="Draw AOI for testing")
         aoi.save_to_file(Path(f"data/{testname}_aoi.geojson"))
 
     project_cfg = ProjectConfig(
-        name=f"{testname}_project",
+        name=f"{testname}",
         dataset=["AHN6", "AHN5"],
         profile="testing",
         aoi_source=Path(f"data/{testname}_aoi.geojson"),
@@ -360,11 +359,21 @@ if __name__ == "__main__":
 
     project_paths = prepare_project(project_cfg)
 
-    run_config = RunConfig(name=f"{testname}_run", resolution=1.0, los_mode="fixed", los_radius=0.15, z_height=20.0)
+    run_cfg = RunConfig(
+        name=f"{testname}_run",
+        resolution=1.0,
+        los_mode="fixed",
+        los_radius=0.15,
+        z_height=20.0,
+        log_level="INFO",
+    )
 
-    run_paths = calculate_2d_viewshed(project_paths, run_config, profile=project_cfg.profile)
-    # run_paths = calculate_3d_viewshed(project_paths, run_config, profile=project_cfg.profile)
-    # run_paths = calculate_3d_flight_height(project_paths, run_config, profile=project_cfg.profile)
+    # run_paths = calculate_2d_viewshed(project_paths, run_cfg, profile=project_cfg.profile)
+    run_paths = calculate_3d_viewshed(project_paths, run_cfg, profile=project_cfg.profile)
+    # run_paths = calculate_3d_flight_height(project_paths, run_cfg, profile=project_cfg.profile)
+    save_viewshed_as_voxel_grid(run_paths, run_cfg=run_cfg, project_paths=project_paths)
+    run_paths = calculate_optimal_route(project_paths, run_cfg, log_level=run_cfg.log_level, overwrite=False)
+
     # remove_intermediate_files(project_paths=project_paths, run_paths=run_paths, profile=project_cfg.profile)
 
     # runs = []

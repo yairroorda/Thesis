@@ -46,6 +46,7 @@ class RunConfig:
     los_step_length: float = 0.15
     z_height: float = 50.0
     target_source: Path | None = None
+    log_level: str = "WARNING"
 
     def __post_init__(self):
         if self.los_mode == "fixed":
@@ -82,7 +83,9 @@ class RunPaths:
 
         self.run_log = self.folder / "run.log"
         self.metadata = self.folder / "metadata.json"
+        self.start_point_copc = self.folder / "start_point.copc.laz"
         self.target_point_copc = self.folder / "target_point.copc.laz"
+        self.optimal_path_copc = self.folder / "optimal_path.copc.laz"
         self.output_viewshed_copc_2d = self.folder / "viewshed_2d.copc.laz"
         self.output_viewshed_tif_2d = self.folder / "viewshed_2d.tif"
         self.grid_shell_copc = self.folder / "grid_points_3d_shell.copc.laz"
@@ -90,6 +93,8 @@ class RunPaths:
         self.output_viewshed_voxel_grid_3d = self.folder / "viewshed_3d_voxel.copc.laz"
         self.output_flight_height_tif = self.folder / "flight_height.tif"
         self.viewable_volume_copc = self.folder / "viewshed_3d_viewable_volume.copc.laz"
+        self.viewshed_3d_with_obstacle_distance_copc = self.folder / "viewshed_3d_with_obstacle_distance.copc.laz"
+        self.output_viewshed_voxel_3d = self.folder / "viewshed_3d_voxel.copc.laz"
 
 
 class AOIPolygon:
@@ -172,6 +177,25 @@ class Point:
         self.x = x
         self.y = y
         self.z = z
+
+    @classmethod
+    def get(cls, input_path: Path, title: str = "Set point", overwrite: bool = False, aoi: AOIPolygon | None = None) -> "Point":
+        """
+        Get a point from a file or ask the user for input if the file doesn't exist or overwrite is True.
+
+        Args:
+            input_path (Path): The path to the file containing the point data.
+            overwrite (bool, optional): Whether to overwrite the existing file. Defaults to False.
+
+        Returns:
+            Point: The point obtained from the file or user input.
+        """
+        if input_path.exists() and not overwrite:
+            point = Point.get_from_file(input_path)
+        else:
+            point = Point.get_from_user(title=title, aoi=aoi)
+            point.save_to_file(input_path)
+        return point
 
     @classmethod
     def get_from_file(cls, path: Path) -> "Point":
