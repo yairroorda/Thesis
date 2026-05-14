@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from models import AOIPolygon, Cylinder, Point, RunPaths, Segment
 from utils import get_logger, timed
-from visualize import save_viewshed_as_tif
+from visualize import save_viewshed_as_tif, write_to_copc
 
 logger = get_logger(name="Calculate")
 
@@ -191,26 +191,6 @@ def get_PDAL_bounds_for_runs(point_pairs: list[Segment], radius: float) -> str:
     maxx, maxy, maxz = np.max(all_points, axis=0) + radius
     # Return string in the format expected by PDAL's filters.crop
     return f"([{minx},{maxx}],[{miny},{maxy}],[{minz},{maxz}])"
-
-
-def write_to_copc(points_in_cylinder: np.ndarray, output_path: Path, crs: str = "EPSG:28992"):
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    write_pipeline = {
-        "pipeline": [
-            {
-                "type": "writers.copc",
-                "filename": str(output_path),
-                "a_srs": crs,
-                "forward": "all",
-                "extra_dims": "all",
-            }
-        ]
-    }
-
-    writer = pdal.Pipeline(json.dumps(write_pipeline), arrays=[points_in_cylinder])
-    writer.execute()
-    logger.info(f"Wrote {points_in_cylinder.size} points to {output_path}")
 
 
 @timed("Loading points for runs")

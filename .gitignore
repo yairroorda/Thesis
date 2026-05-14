@@ -7,6 +7,7 @@ __pycache__/
 .pixi/
 
 */pathfinding.py
+*/produce_paths.py
 
 # Potree example files
 

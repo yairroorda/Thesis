@@ -215,6 +215,26 @@ def save_viewshed_as_voxel_grid(
         logger.info(f"Saved 3D viewshed voxel grid in VTI format to {output_vti_path}")
 
 
+def write_to_copc(points_in_cylinder: np.ndarray, output_path: Path, crs: str = "EPSG:28992"):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    write_pipeline = {
+        "pipeline": [
+            {
+                "type": "writers.copc",
+                "filename": str(output_path),
+                "a_srs": crs,
+                "forward": "all",
+                "extra_dims": "all",
+            }
+        ]
+    }
+
+    writer = pdal.Pipeline(json.dumps(write_pipeline), arrays=[points_in_cylinder])
+    writer.execute()
+    logger.info(f"Wrote {points_in_cylinder.size} points to {output_path}")
+
+
 if __name__ == "__main__":
     project_root = Path("data/evaluate_vegetation_influence_veg_eval_01_1776769328")
     run_folder = project_root / "run_01_without"
