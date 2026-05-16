@@ -1,7 +1,9 @@
 import json
+import shutil
 import sys
+import time
 from pathlib import Path
-from typing import Callable, Iterable, Literal
+from typing import Callable, Literal
 
 import numpy as np
 import pdal
@@ -12,16 +14,11 @@ from shapely import points as shapely_points
 from shapely.geometry import Point as ShapelyPoint
 from tqdm import tqdm
 
-from models import AOIPolygon, Cylinder, Point, RunPaths, Segment
-from utils import get_logger, timed
-from visualize import save_viewshed_as_tif, write_to_copc
+from models import AOIPolygon, Cylinder, Point, ProjectConfig, ProjectPaths, RunConfig, RunPaths, Segment
+from utils import get_logger, load_profile, timed, write_metadata
+from visualize import save_viewshed_as_tif, save_viewshed_as_voxel_grid, write_to_copc
 
 logger = get_logger(name="Calculate")
-
-DEFAULT_INPUT = Path(r"data/Groningen_plein_AHN4/facades.copc.laz")
-DEFAULT_OUTPUT = Path(r"data/output_viewshed_shell.copc.laz")
-
-WRITE_TO_FILE = True  # Control whether to write query outputs to a file.
 
 CLASS_TERRAIN = 2
 CLASS_BUILDING = 6
@@ -194,7 +191,7 @@ def get_PDAL_bounds_for_runs(point_pairs: list[Segment], radius: float) -> str:
 
 
 @timed("Loading points for runs")
-def load_points_for_runs(point_pairs: list[Segment], radius: float, input_path: Path = DEFAULT_INPUT) -> tuple[np.ndarray, np.ndarray, cKDTree]:
+def load_points_for_runs(point_pairs: list[Segment], radius: float, input_path: Path) -> tuple[np.ndarray, np.ndarray, cKDTree]:
     """
     Load points from the input file that fall within a bounding box defined by the point pairs and radius.
     """
@@ -407,9 +404,10 @@ def calculate_viewshed_for_grid(
     min_radius: float | None = None,
     max_radius: float | None = None,
     step_length: float | None = None,
-    input_path: Path = DEFAULT_INPUT,
-    output_path: Path = DEFAULT_OUTPUT,
+    input_path: Path | None = None,
+    output_path: Path | None = None,
     intervisibility_func: Callable = calculate_intervisibility,
+    save_to_disk: bool = True,
     chunk_size: float = DEFAULT_CHUNK_SIZE,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -467,7 +465,7 @@ def calculate_viewshed_for_grid(
     else:
         out_array = out_grid
 
-    if WRITE_TO_FILE:
+    if save_to_disk:
         write_to_copc(out_array, output_path)
 
     return visibility_values, out_array
@@ -482,11 +480,12 @@ def calculate_viewshed(
     min_radius: float | None = None,
     max_radius: float | None = None,
     step_length: float | None = None,
-    input_path: Path = DEFAULT_INPUT,
-    output_path: Path = DEFAULT_OUTPUT,
+    input_path: Path | None = None,
+    output_path: Path | None = None,
     thinning_factor: int = 1,
     intervisibility_func: Callable = calculate_intervisibility,
     chunk_size: float = DEFAULT_CHUNK_SIZE,
+    save_to_disk: bool = True,
 ) -> None:
     """
     For every point within search_radius of target, compute the intervisibility
@@ -560,11 +559,11 @@ def calculate_viewshed(
         out_array[name] = thinned_points[name]
     out_array["Visibility"] = visibility_values
 
-    if WRITE_TO_FILE:
+    if save_to_disk:
         write_to_copc(out_array, output_path)
 
 
-def hag_to_nap(points: list["Point"], input_path: Path = DEFAULT_INPUT) -> list["Point"]:
+def hag_to_nap(points: list["Point"], input_path: Path) -> list["Point"]:
     """
     Converts a list of points from Height Above Ground (HAG) to NAP.
     """
@@ -572,7 +571,7 @@ def hag_to_nap(points: list["Point"], input_path: Path = DEFAULT_INPUT) -> list[
     return [Point(point.x, point.y, point.z + ground) for point, ground in zip(points, ground_levels)]
 
 
-def nap_to_hag(points: list["Point"], input_path: Path = DEFAULT_INPUT) -> list["Point"]:
+def nap_to_hag(points: list["Point"], input_path: Path) -> list["Point"]:
     """
     Converts a list of points from NAP to Height Above Ground (HAG).
     """
@@ -584,8 +583,8 @@ def calculate_viewshed_2d(
     target: Point,
     aoi: AOIPolygon,
     resolution: float = 1.0,
-    input_path: Path = DEFAULT_INPUT,
-    output_path: Path = DEFAULT_OUTPUT,
+    input_path: Path | None = None,
+    output_path: Path | None = None,
     z_offset: float = 0.0,
     radius: float = 0.15,
     *,
@@ -618,15 +617,19 @@ def calculate_viewshed_2d(
 
 
 def calculate_flight_height(
-    aoi: AOIPolygon,
-    resolution: float = 1.0,
-    input_path: Path = DEFAULT_INPUT,
-    output_path: Path = DEFAULT_OUTPUT,
-    visibility_threshold: float = 0.5,
+    project_cfg: ProjectConfig,
+    project_paths: ProjectPaths,
+    run_cfg: RunConfig,
+    run_paths: RunPaths,
+    visibility_threshold: float = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute HAG flight height grid from visible 3D viewshed points."""
+    # Resolve inputs from config/paths
+    aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs(project_cfg.crs)
+    resolution = run_cfg.resolution
+    input_path = run_paths.output_viewshed_copc_3d
+    output_path = run_paths.output_flight_height_tif
 
-    # Get points from the 3d vieshed below the visibility threshold
+    # Read visibility points from the 3D viewshed COPC
     minx, miny, maxx, maxy = aoi.bounds
     pipeline = {
         "pipeline": [
@@ -665,7 +668,7 @@ def calculate_flight_height(
 
     # Calculate HAG
     grid_points = [Point(x, y, 0.0) for x, y in zip(flat_x, flat_y)]
-    ground_elev = sample_ground(input_path=input_path, points=grid_points)
+    ground_elev = sample_ground(input_path=project_paths.classified_copc, points=grid_points)
     flat_hag = flat_z - ground_elev
 
     save_viewshed_as_tif(
@@ -680,111 +683,7 @@ def calculate_flight_height(
     return flat_x, flat_y, flat_hag
 
 
-def iter_merge_2d_viewshed(runs: Iterable[RunPaths], output_path: Path) -> Path:
-    """Loop over 2d tif viewshed for each runpath and merge into single tif using rasterio"""
-
-    tiffs = [run.output_viewshed_tif_2d for run in runs]
-    for tif in tiffs:
-        if not tif.exists():
-            logger.error(f"TIFF file does not exist: {tif}")
-            raise FileNotFoundError(f"TIFF file does not exist: {tif}")
-
-    # Iteratively merge the TIFFS taking the maximum visibility value at each pixel
-    import rasterio
-    from rasterio.merge import merge
-
-    datasets = [rasterio.open(tif) for tif in tiffs]
-    mosaic, out_transform = merge(datasets, method="max")
-    out_meta = datasets[0].meta.copy()
-    out_meta.update({
-        "height": mosaic.shape[1],
-        "width": mosaic.shape[2],
-        "transform": out_transform,
-    })
-    with rasterio.open(output_path, "w", **out_meta) as dest:
-        dest.write(mosaic)
-        logger.info(f"Merged viewshed saved to: {output_path}")
-        return output_path
-
-
-def iter_merge_3d_viewshed(runs: Iterable[RunPaths], output_path: Path) -> Path:
-    """Iteratively merge voxel COPCs by taking max Visibility for matching voxel XYZ."""
-
-    copcs = [run.output_viewshed_voxel_grid_3d for run in runs]
-    if not copcs:
-        raise ValueError("No runs provided for 3D viewshed merge.")
-
-    for copc in copcs:
-        if not copc.exists():
-            logger.error(f"COPC file does not exist: {copc}")
-            raise FileNotFoundError(f"COPC file does not exist: {copc}")
-
-    import pdal
-
-    def _read_copc(path: Path) -> np.ndarray:
-        read_pipeline = {"pipeline": [{"type": "readers.copc", "filename": str(path)}]}
-        pipeline = pdal.Pipeline(json.dumps(read_pipeline))
-        pipeline.execute()
-        if not pipeline.arrays:
-            raise ValueError(f"No arrays found in COPC: {path}")
-        return np.concatenate(pipeline.arrays)
-
-    def _max_merge_voxels(left: np.ndarray, right: np.ndarray, decimals: int = 6) -> np.ndarray:
-        lx = np.round(left["X"], decimals)
-        ly = np.round(left["Y"], decimals)
-        lz = np.round(left["Z"], decimals)
-        rx = np.round(right["X"], decimals)
-        ry = np.round(right["Y"], decimals)
-        rz = np.round(right["Z"], decimals)
-
-        all_x = np.concatenate([lx, rx])
-        all_y = np.concatenate([ly, ry])
-        all_z = np.concatenate([lz, rz])
-        all_v = np.concatenate([left["Visibility"].astype(np.float64), right["Visibility"].astype(np.float64)])
-
-        key_dtype = np.dtype([("X", "f8"), ("Y", "f8"), ("Z", "f8")])
-        keys = np.empty(all_x.shape[0], dtype=key_dtype)
-        keys["X"] = all_x
-        keys["Y"] = all_y
-        keys["Z"] = all_z
-
-        unique_keys, inverse = np.unique(keys, return_inverse=True)
-        max_visibility = np.full(unique_keys.shape[0], -np.inf, dtype=np.float64)
-        np.maximum.at(max_visibility, inverse, all_v)
-
-        out_dtype = [("X", "f8"), ("Y", "f8"), ("Z", "f8"), ("Visibility", "f4")]
-        out = np.empty(unique_keys.shape[0], dtype=out_dtype)
-        out["X"] = unique_keys["X"]
-        out["Y"] = unique_keys["Y"]
-        out["Z"] = unique_keys["Z"]
-        out["Visibility"] = max_visibility.astype(np.float32)
-        return out
-
-    merged = _read_copc(copcs[0])
-    logger.info(f"Initialized 3D merge with {copcs[0]} ({merged.shape[0]} voxels)")
-
-    for idx, copc_path in enumerate(copcs[1:], start=2):
-        current = _read_copc(copc_path)
-        merged = _max_merge_voxels(merged, current)
-        logger.info(f"Merged {idx}/{len(copcs)} voxel files; current merged voxel count: {merged.shape[0]}")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    write_pipeline = {
-        "pipeline": [
-            {
-                "type": "writers.copc",
-                "filename": str(output_path),
-                "forward": "all",
-                "extra_dims": "all",
-            }
-        ]
-    }
-    pdal.Pipeline(json.dumps(write_pipeline), arrays=[merged]).execute()
-    logger.info(f"Merged viewshed saved to: {output_path}")
-    return output_path
-
-
-def demo_flight_height():
+def demo_flight_height(input_path: Path):
     """
     Interactive demo: select target and AOI, generate 3D grid, compute 3D viewshed, then compute flight height ceiling and output GeoTIFF.
     """
@@ -818,7 +717,7 @@ def demo_flight_height():
         target=target,
         grid_points=grid_points,
         cylinder_radius=radius,
-        input_path=DEFAULT_INPUT,
+        input_path=input_path,
         output_path=viewshed_output_path,
         intervisibility_func=calculate_intervisibility,
         chunk_size=chunk_size,
@@ -826,18 +725,28 @@ def demo_flight_height():
 
     # Compute flight height ceiling from the 3D viewshed COPC
     flight_height_output_path = Path("data/flight_height_output.tif")
+    # Build minimal config/paths to call the new API
+    proj_cfg = ProjectConfig(name="demo_project", crs="EPSG:28992")
+    proj_paths = ProjectPaths("demo_project", base_dir=Path("data"))
+    run_cfg = RunConfig(name="demo_run", resolution=resolution)
+    run_paths = RunPaths(proj_paths, "demo_run")
+    # Override run paths to use demo files
+    run_paths.output_viewshed_copc_3d = viewshed_output_path
+    run_paths.output_flight_height_tif = flight_height_output_path
+    proj_paths.classified_copc = input_path
+
     calculate_flight_height(
-        aoi=aoi,
-        resolution=resolution,
-        input_path=viewshed_output_path,
-        output_path=flight_height_output_path,
+        project_cfg=proj_cfg,
+        project_paths=proj_paths,
+        run_cfg=run_cfg,
+        run_paths=run_paths,
         visibility_threshold=0.5,
     )
 
     print(f"Flight height GeoTIFF written to {flight_height_output_path}")
 
 
-def demo_viewshed_2d():
+def demo_viewshed_2d(input_path: Path):
     target_NAP = Point(233851.5, 581986.8, 1.7)
     target = hag_to_nap([target_NAP])[0]
     export_grid_to_copc([target], output_path=Path("data/target_point.copc.laz"))
@@ -850,13 +759,13 @@ def demo_viewshed_2d():
         aoi=aoi,
         radius=radius,
         resolution=resolution,
-        input_path=DEFAULT_INPUT,
+        input_path=input_path,
         output_path=output_path,
         z_offset=0.3,
     )
 
 
-def demo_viewshed_from_grid():
+def demo_viewshed_from_grid(input_path: Path, output_path: Path):
     target = Point.get_from_user("Select target point for viewshed calculation")
     area = AOIPolygon.get_from_user("Select area for grid generation")
     resolution = 1.0
@@ -868,14 +777,14 @@ def demo_viewshed_from_grid():
         target=target,
         grid_points=grid_points,
         cylinder_radius=radius,
-        input_path=DEFAULT_INPUT,
-        output_path=DEFAULT_OUTPUT,
+        input_path=input_path,
+        output_path=output_path,
         intervisibility_func=calculate_intervisibility,
         chunk_size=chunk_size,
     )
 
 
-def demo_viewshed_from_cloud():
+def demo_viewshed_from_cloud(input_path: Path, output_path: Path):
     target = Point(233974.5, 582114.2, 5.0)
     search_radius = 100
     radius = 0.15
@@ -885,8 +794,8 @@ def demo_viewshed_from_cloud():
         target=target,
         search_radius=search_radius,
         cylinder_radius=radius,
-        input_path=DEFAULT_INPUT,
-        output_path=DEFAULT_OUTPUT,
+        input_path=input_path,
+        output_path=output_path,
         thinning_factor=thinning_factor,
         intervisibility_func=calculate_intervisibility,
         chunk_size=chunk_size,
@@ -925,6 +834,280 @@ def only_save_viewable_volume(input_path: Path, output_path: Path):
         return
     write_to_copc(arr, output_path)
     logger.info(f"Saved viewable volume to {output_path}")
+
+
+@timed("Run 2D viewshed")
+def calculate_2d_viewshed(project_cfg: ProjectConfig, project_paths: ProjectPaths, run_cfg: RunConfig, profile: str = "testing") -> RunPaths:
+    profile_cfg = load_profile(profile)
+    run_paths = RunPaths(project_paths, run_cfg.name)
+
+    run_logger = get_logger(name="Main", logfile_path=run_paths.run_log, level=profile_cfg.logging_level)
+
+    source_aoi_crs = AOIPolygon.get_from_file(project_paths.aoi).crs
+    aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs(project_cfg.crs)
+
+    run_logger.info(f"Running viewshed '{run_cfg.name}' in project '{project_paths.name}'")
+    run_logger.info(f"LoS settings: mode={run_cfg.los_mode} radius={run_cfg.los_radius} min_radius={run_cfg.los_start_radius} max_radius={run_cfg.los_end_radius} step_length={run_cfg.los_step_length}")
+
+    start_time = time.perf_counter()
+
+    target = Point.get_from_file(run_cfg.target_source)
+
+    viewshed_2d_path = run_paths.output_viewshed_copc_2d
+    _, _, visibility_points = calculate_viewshed_2d(
+        target=target,
+        aoi=aoi,
+        radius=run_cfg.los_radius,
+        radius_mode=run_cfg.los_mode,
+        min_radius=run_cfg.los_start_radius,
+        max_radius=run_cfg.los_end_radius,
+        step_length=run_cfg.los_step_length,
+        resolution=run_cfg.resolution,
+        input_path=project_paths.facades_copc,
+        output_path=viewshed_2d_path,
+        z_offset=0.3,
+    )
+    viewshed_tif = run_paths.output_viewshed_tif_2d
+    save_viewshed_as_tif(
+        x_coords=visibility_points["X"],
+        y_coords=visibility_points["Y"],
+        visibility_values=visibility_points["Visibility"],
+        aoi=aoi,
+        resolution=run_cfg.resolution,
+        output_path=viewshed_tif,
+    )
+
+    write_metadata(run_cfg, project_paths, run_paths, project_cfg.profile, source_aoi_crs, start_time)
+
+    run_logger.info("Run completed")
+    return run_paths
+
+
+@timed("Run viewshed")
+def calculate_3d_viewshed(
+    project_cfg: ProjectConfig,
+    project_paths: ProjectPaths,
+    run_cfg: RunConfig,
+    profile: str = "testing",
+    save_to_disk: bool = True,
+) -> tuple[RunPaths, np.ndarray, np.ndarray]:
+    profile_cfg = load_profile(profile)
+    run_paths = RunPaths(project_paths, run_cfg.name)
+
+    log_path = run_paths.run_log if save_to_disk else None
+    run_logger = get_logger(name="Main", logfile_path=log_path, level=profile_cfg.logging_level)
+
+    source_aoi_crs = AOIPolygon.get_from_file(project_paths.aoi).crs
+    aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs(project_cfg.crs)
+
+    run_logger.info(f"Running viewshed '{run_cfg.name}' in project '{project_paths.name}'")
+    run_logger.info(f"LoS settings: mode={run_cfg.los_mode} radius={run_cfg.los_radius} min_radius={run_cfg.los_start_radius} max_radius={run_cfg.los_end_radius} step_length={run_cfg.los_step_length}")
+
+    start_time = time.perf_counter()
+
+    target = Point.get(
+        hag_sample_input_path=project_paths.input_copc,
+        input_path=run_cfg.target_source,
+        title="Select target point for 3D viewshed",
+        overwrite=run_cfg.overwrite,
+        aoi=AOIPolygon.get_from_file(project_paths.aoi).to_crs(project_cfg.crs),
+    )
+
+    top_points = generate_grid(aoi, run_cfg.resolution, z_height=run_cfg.z_height, two_d=True)
+    for pt in top_points:
+        pt.z = run_cfg.z_height
+
+    boundary_points = sample_polygon_boundary(aoi, sample_distance=run_cfg.resolution, z_height=0.0)
+    wall_zs = np.arange(0, run_cfg.z_height + run_cfg.resolution, run_cfg.resolution)
+    wall_points = [Point(pt.x, pt.y, z) for pt in boundary_points for z in wall_zs]
+    grid_points = top_points + wall_points
+    if save_to_disk:
+        export_grid_to_copc(grid_points, output_path=run_paths.grid_shell_copc)
+
+    vis_vals, out_array = calculate_viewshed_for_grid(
+        target=target,
+        grid_points=grid_points,
+        cylinder_radius=run_cfg.los_radius,
+        radius_mode=run_cfg.los_mode,
+        min_radius=run_cfg.los_start_radius,
+        max_radius=run_cfg.los_end_radius,
+        step_length=run_cfg.los_step_length,
+        input_path=project_paths.facades_copc,
+        output_path=run_paths.output_viewshed_copc_3d,
+        intervisibility_func=calculate_intervisibility,
+        chunk_size=5,
+        save_to_disk=save_to_disk,
+    )
+
+    if save_to_disk:
+        only_save_viewable_volume(run_paths.output_viewshed_copc_3d, run_paths.viewable_volume_copc)
+        write_metadata(run_cfg, project_paths, run_paths, project_cfg.profile, source_aoi_crs, start_time)
+
+    run_logger.info("Run completed")
+    return run_paths, vis_vals, out_array
+
+
+def calculate_3d_flight_height(
+    project_cfg: ProjectConfig,
+    project_paths: ProjectPaths,
+    run_cfg: RunConfig,
+    profile: str = "testing",
+    threshold: float = 0,
+) -> RunPaths:
+
+    profile_cfg = load_profile(profile)
+    run_paths = RunPaths(project_paths, run_cfg.name)
+
+    run_logger = get_logger(name="Main", logfile_path=run_paths.run_log, level=profile_cfg.logging_level)
+
+    source_aoi_crs = AOIPolygon.get_from_file(project_paths.aoi).crs
+
+    run_logger.info(f"Running viewshed '{run_cfg.name}' in project '{project_paths.name}'")
+    run_logger.info(f"LoS settings: mode={run_cfg.los_mode} radius={run_cfg.los_radius} min_radius={run_cfg.los_start_radius} max_radius={run_cfg.los_end_radius} step_length={run_cfg.los_step_length}")
+
+    start_time = time.perf_counter()
+
+    calculate_flight_height(
+        project_cfg=project_cfg,
+        project_paths=project_paths,
+        run_cfg=run_cfg,
+        run_paths=run_paths,
+        visibility_threshold=threshold,
+    )
+
+    write_metadata(run_cfg, project_paths, run_paths, project_cfg.profile, source_aoi_crs, start_time)
+
+    run_logger.info("Run completed")
+    return run_paths
+
+
+def setup_targets(run_cfg: RunConfig, project_paths: ProjectPaths, aoi_rd: AOIPolygon, number_of_targets: int) -> list[Path]:
+    target_sources = []
+    merge_dir = project_paths.runs_folder / run_cfg.name / "merge_candidates"
+    merge_dir.mkdir(exist_ok=True)
+    for i in range(number_of_targets):
+        target_path = merge_dir / f"target_run_{i + 1}.copc.laz"
+        Point.get(
+            hag_sample_input_path=project_paths.input_copc,
+            input_path=target_path,
+            title=f"Select target point for run {i + 1}",
+            overwrite=False,
+            aoi=aoi_rd,
+        )
+        target_sources.append(target_path)
+
+    return target_sources
+
+
+def save_cumulative_viewshed(
+    height: int,
+    width: int,
+    min_x: float,
+    max_y: float,
+    min_z: float,
+    cumulative_voxels: dict[int, float],
+    cumulative_run_paths: RunPaths,
+    project_paths: ProjectPaths,
+    run_cfg: RunConfig,
+):
+    # Reconstruct 3D Point Cloud from Master Grid in batches to keep memory bounded
+    logger.info("Reconstructing volumetric cumulative viewshed...")
+    save_viewshed_as_voxel_grid(
+        run_paths=cumulative_run_paths,
+        run_cfg=run_cfg,
+        project_paths=project_paths,
+        file_type="copc",
+    )
+    # Copy to raw viewshed path for consistency with downstream analysis
+    shutil.copy2(cumulative_run_paths.output_viewshed_voxel_grid_3d, cumulative_run_paths.output_viewshed_copc_3d)
+
+    logger.info(f"Cumulative volumetric viewshed saved to run folder: {cumulative_run_paths.folder.name}")
+
+
+def calculate_cumulative_viewshed(
+    number_of_targets: int,
+    project_cfg: ProjectConfig,
+    project_paths: ProjectPaths,
+    run_cfg: RunConfig,
+    save_to_disk: bool = False,
+) -> RunPaths:
+
+    # Setup AOI
+    aoi_rd = AOIPolygon.get_from_file(project_paths.aoi).to_crs(project_cfg.crs)
+
+    # Establish global grid
+    min_x, min_y, max_x, max_y = aoi_rd.bounds
+    min_z = 0.0  # Assuming NAP ground floor
+    max_z = run_cfg.z_height
+
+    width = int(np.floor((max_x - min_x) / run_cfg.resolution)) + 1
+    height = int(np.floor((max_y - min_y) / run_cfg.resolution)) + 1
+    depth = int(np.floor((max_z - min_z) / run_cfg.resolution)) + 1
+
+    # Dictionary to store the accumulated visibility (Sparse 3D matrix)
+    cumulative_voxels: dict[int, float] = {}
+
+    # Cache the original run name to restore later (since we'll mutate it in the loop)
+    original_run_name = run_cfg.name
+    cumulative_run_paths = RunPaths(project_paths, original_run_name)
+    cumulative_run_paths.folder.mkdir(parents=True, exist_ok=True)
+
+    target_sources = setup_targets(run_cfg, project_paths, aoi_rd, number_of_targets)
+    for idx, target_source in enumerate(target_sources):
+        # Mutate config for the worker
+        run_cfg.name = f"{project_cfg.name}_run_{idx + 1}"
+        # make sure directory for log file exists
+        if save_to_disk:
+            (project_paths.runs_folder / run_cfg.name).mkdir(parents=True, exist_ok=True)
+        run_cfg.target_source = target_source
+
+        logger.info(f"Processing run {idx + 1}/{number_of_targets}...")
+
+        # Compute individual viewshed (Worker returns raw point array with LoS rays)
+        run_paths, _, out_array = calculate_3d_viewshed(project_cfg=project_cfg, project_paths=project_paths, run_cfg=run_cfg, profile=project_cfg.profile, save_to_disk=save_to_disk)
+        if save_to_disk:
+            save_viewshed_as_voxel_grid(run_paths, run_cfg=run_cfg, project_paths=project_paths)
+
+        # Voxelize this observer's rays into the Global Grid
+        cols = np.floor((out_array["X"] - min_x) / run_cfg.resolution).astype(np.int64)
+        rows = np.floor((max_y - out_array["Y"]) / run_cfg.resolution).astype(np.int64)
+        depths = np.floor((out_array["Z"] - min_z) / run_cfg.resolution).astype(np.int64)
+        vis = out_array["Visibility"]
+
+        # Filter out points that fall outside our bounded grid
+        valid = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width) & (depths >= 0) & (depths < depth)
+
+        # Flatten 3D indices to 1D keys
+        flat_indices = (depths[valid] * height * width) + (rows[valid] * width) + cols[valid]
+        valid_vis = vis[valid]
+
+        # Fast NumPy trick to find the MAX visibility per voxel for THIS observer
+        order = np.argsort(flat_indices, kind="mergesort")
+        flat_sorted = flat_indices[order]
+        vis_sorted = valid_vis[order]
+        unique_flat, first_idx = np.unique(flat_sorted, return_index=True)
+        chunk_max = np.maximum.reduceat(vis_sorted, first_idx)
+
+        # Accumulate the max visibility
+        for flat, value in zip(unique_flat.tolist(), chunk_max.tolist()):
+            existing = cumulative_voxels.get(flat, -1.0)
+            cumulative_voxels[flat] = max(existing, float(value))
+
+    # Restore original run name in config
+    run_cfg.name = original_run_name
+    save_cumulative_viewshed(
+        height=height,
+        width=width,
+        min_x=min_x,
+        max_y=max_y,
+        min_z=min_z,
+        cumulative_voxels=cumulative_voxels,
+        cumulative_run_paths=cumulative_run_paths,
+        run_cfg=run_cfg,
+        project_paths=project_paths,
+    )
+
+    return cumulative_run_paths
 
 
 if __name__ == "__main__":

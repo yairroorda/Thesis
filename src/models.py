@@ -1,12 +1,13 @@
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import List, Literal
 
 import geopandas as gpd
 import numpy as np
 import pdal
 from pyproj import Transformer
+from shapely.geometry import LineString
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon as ShapelyPolygon
 
@@ -14,6 +15,7 @@ from gui import make_map
 
 RadiusMode = Literal["fixed", "widening_linear"]
 _TO_RD = Transformer.from_crs("EPSG:4326", "EPSG:28992", always_xy=True)
+_TO_LAMBERT = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
 
 
 def _validate_points_in_aoi(points_xy: list[tuple[float, float]], aoi: "AOIPolygon", labels: list[str]) -> None:
@@ -25,8 +27,16 @@ def _validate_points_in_aoi(points_xy: list[tuple[float, float]], aoi: "AOIPolyg
 
 
 @dataclass
+class ProfileConfig:
+    name: str
+    logging_level: str = "INFO"
+    remove: List[str] = None
+
+
+@dataclass
 class ProjectConfig:
     name: str = "test_project"
+    crs: str = "EPSG:28992"
     dataset: list[str] = field(default_factory=lambda: ["AHN6", "AHN5"])
     classification_method: str = "myria3d"
     myria3d_vegetation_prob_threshold_pct: float = 90.0
@@ -38,6 +48,7 @@ class ProjectConfig:
 @dataclass
 class RunConfig:
     name: str = "test_run"
+    overwrite: bool = False
     resolution: float = 2.0
     los_mode: str = "fixed"
     los_radius: float = 0.15
@@ -79,7 +90,6 @@ class RunPaths:
         self.project = project_paths
         self.name = run_name
         self.folder = project_paths.runs_folder / run_name
-        self.folder.mkdir(parents=True, exist_ok=True)
 
         self.run_log = self.folder / "run.log"
         self.metadata = self.folder / "metadata.json"
@@ -101,6 +111,16 @@ class AOIPolygon:
     def __init__(self, polygon: ShapelyPolygon, crs: str = "EPSG:28992"):
         self.polygon = polygon
         self.crs = crs
+
+    @classmethod
+    def get(cls, input_path: Path, title: str = "Draw polygon", overwrite: bool = False) -> "AOIPolygon":
+        """Get an AOI polygon from a file or ask the user for input if the file doesn't exist or overwrite is True."""
+        if input_path.exists() and not overwrite:
+            return cls.get_from_file(input_path)
+        else:
+            aoi = cls.get_from_user(title=title)
+            aoi.save_to_file(input_path)
+            return aoi
 
     @classmethod
     def get_from_user(cls, title: str = "Draw polygon") -> "AOIPolygon":
@@ -179,21 +199,22 @@ class Point:
         self.z = z
 
     @classmethod
-    def get(cls, input_path: Path, title: str = "Set point", overwrite: bool = False, aoi: AOIPolygon | None = None) -> "Point":
+    def get(cls, hag_sample_input_path: Path, input_path: Path, title: str = "Set point", overwrite: bool = False, aoi: AOIPolygon | None = None) -> "Point":
         """
         Get a point from a file or ask the user for input if the file doesn't exist or overwrite is True.
 
         Args:
+            hag_sample_input_path (Path): The path to the HAG sample file.
             input_path (Path): The path to the file containing the point data.
             overwrite (bool, optional): Whether to overwrite the existing file. Defaults to False.
 
         Returns:
             Point: The point obtained from the file or user input.
         """
-        if input_path.exists() and not overwrite:
+        if input_path and input_path.exists() and not overwrite:
             point = Point.get_from_file(input_path)
         else:
-            point = Point.get_from_user(title=title, aoi=aoi)
+            point = Point.get_from_user(hag_sample_input_path=hag_sample_input_path, title=title, aoi=aoi)
             point.save_to_file(input_path)
         return point
 
@@ -215,7 +236,7 @@ class Point:
         return cls(first["X"], first["Y"], first["Z"])
 
     @classmethod
-    def get_from_user(cls, title: str = "Set point", aoi: AOIPolygon | None = None) -> "Point":
+    def get_from_user(cls, hag_sample_input_path: Path, title: str = "Set point", aoi: AOIPolygon | None = None) -> "Point":
         """Let the user pick one point on the map. Returns (x, y, z) in RD."""
         import tkinter as tk
 
@@ -237,7 +258,7 @@ class Point:
 
         tk.Label(controls, text="P1 Z").pack(anchor="w", pady=(8, 0))
         pz = tk.Entry(controls)
-        pz.insert(0, "8.0")
+        pz.insert(0, "1.8")
         pz.pack(fill=tk.X)
 
         is_hag = tk.BooleanVar(value=True)
@@ -248,17 +269,29 @@ class Point:
 
         root.mainloop()
 
-        if aoi is not None:
-            _validate_points_in_aoi([p_xy["v"]], aoi, labels=["Selected point"])
+        print(f"You entered Z value: {pz.get()} and HAG mode is {'on' if is_hag.get() else 'off'}")
 
-        p = (*p_xy["v"], float(pz.get()))
+        if aoi is not None and p_xy["v"] is not None:
+            _validate_points_in_aoi([p_xy["v"]], aoi, labels=["Selected point"])
+        else:
+            raise ValueError("No point was selected.")
+
+        try:
+            z_val = float(pz.get())
+        except ValueError:
+            raise ValueError("Invalid Z value entered. Please enter a valid number for the Z coordinate.")
+
+        p = (*p_xy["v"], z_val)
+
         root.destroy()
 
         pt = cls(*p)
+
         if is_hag.get():
             from calculate import hag_to_nap
 
-            return hag_to_nap([pt])[0]
+            return hag_to_nap([pt], input_path=hag_sample_input_path)[0]
+
         return pt
 
     def save_to_file(self, path: Path, crs: str = "EPSG:28992") -> None:
@@ -282,7 +315,7 @@ class Segment:
         self.length = np.sqrt(self.length_squared)
 
     @classmethod
-    def get_from_user(cls, title: str = "Set P1/P2", aoi: AOIPolygon | None = None) -> "Segment":
+    def get_from_user(cls, hag_sample_input_path: Path, title: str = "Set P1/P2", aoi: AOIPolygon | None = None) -> "Segment":
         """Let the user pick two points on the map. Returns (p1, p2) with p1/p2 as (x, y, z) in RD."""
         import tkinter as tk
 
@@ -312,12 +345,12 @@ class Segment:
 
         tk.Label(controls, text="P1 Z").pack(anchor="w", pady=(8, 0))
         p1z = tk.Entry(controls)
-        p1z.insert(0, "8.0")
+        p1z.insert(0, "1.8")
         p1z.pack(fill=tk.X)
 
         tk.Label(controls, text="P2 Z").pack(anchor="w", pady=(8, 0))
         p2z = tk.Entry(controls)
-        p2z.insert(0, "10.0")
+        p2z.insert(0, "1.8")
         p2z.pack(fill=tk.X)
 
         is_hag = tk.BooleanVar(value=True)
@@ -339,7 +372,7 @@ class Segment:
         if is_hag.get():
             from calculate import hag_to_nap
 
-            pts = hag_to_nap(pts)
+            pts = hag_to_nap(pts, input_path=hag_sample_input_path)
         return cls(pts[0], pts[1])
 
 
@@ -370,3 +403,99 @@ class Cylinder:
             return np.full_like(t_clipped, self.max_radius, dtype=np.float64)
 
         return self.min_radius + t_clipped * (self.max_radius - self.min_radius)
+
+
+class ObserverPath:
+    def __init__(self, linestring: LineString, crs: str = "EPSG:28992"):
+        self.linestring = linestring
+        self.crs = crs
+
+    @classmethod
+    def get_from_user(cls, hag_sample_input_path: Path, aoi: AOIPolygon, title: str = "Draw Trail for Lookout Search", crs: str = "EPSG:28992") -> "ObserverPath":
+        import tkinter as tk
+
+        root, map_widget, controls = make_map(title, aoi=aoi)
+
+        points_latlon: list[tuple[float, float]] = []
+        path_obj = {"obj": None}
+        marker_list: list = []
+
+        def redraw():
+            if path_obj["obj"] is not None:
+                path_obj["obj"].delete()
+            for m in marker_list:
+                m.delete()
+            marker_list.clear()
+            for pt in points_latlon:
+                marker_list.append(map_widget.set_marker(*pt))
+            if len(points_latlon) >= 2:
+                path_obj["obj"] = map_widget.set_path(points_latlon)
+
+        def on_click(coords):
+            points_latlon.append((float(coords[0]), float(coords[1])))
+            redraw()
+
+        def clear():
+            points_latlon.clear()
+            redraw()
+
+        tk.Button(controls, text="Clear Path", command=clear).pack(fill=tk.X)
+        tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(8, 0))
+        tk.Label(controls, text="Click map to draw the trail.\nPress Done when finished.", justify=tk.LEFT).pack(anchor="w", pady=(10, 0))
+
+        map_widget.add_left_click_map_command(on_click)
+        root.mainloop()
+        root.destroy()
+
+        if len(points_latlon) < 2:
+            raise ValueError("A trail must have at least two points.")
+
+        transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        transformed_points = [transformer.transform(lon, lat) for lat, lon in points_latlon]
+        return cls(LineString(transformed_points), crs=crs)
+
+    def sample_points(self, step_size: float, z_height: float = 0.0) -> list[Point]:
+        """Samples points evenly along the polyline at the requested step size."""
+        length = self.linestring.length
+        num_samples = max(2, int(np.ceil(length / step_size)) + 1)
+        distances = np.linspace(0, length, num_samples)
+
+        points = []
+        for d in distances:
+            pt = self.linestring.interpolate(d)
+            points.append(Point(pt.x, pt.y, z_height))
+        return points
+
+    def save_to_file(self, path: Path, crs: str = "EPSG:28992") -> None:
+        """Save this path to a GeoJSON file for later retrieval."""
+        gdf = gpd.GeoDataFrame(geometry=[self.linestring], crs=crs)
+        gdf.to_file(path, driver="GeoJSON")
+
+    @classmethod
+    def get_from_file(cls, path: Path) -> "ObserverPath":
+        gdf = gpd.read_file(path)
+        if gdf.empty:
+            raise ValueError(f"No geometry found in {path}")
+        source_crs = gdf.crs.to_string() if gdf.crs else "EPSG:4326"
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326")
+        return cls(gdf.geometry.iloc[0], crs=source_crs)
+
+    @classmethod
+    def get(cls, input_path: Path, title: str = "Select Route", overwrite: bool = False, aoi: AOIPolygon | None = None) -> "ObserverPath":
+        """
+        Get a point from a file or ask the user for input if the file doesn't exist or overwrite is True.
+
+        Args:
+            input_path (Path): The path to the file containing the point data.
+            overwrite (bool, optional): Whether to overwrite the existing file. Defaults to False.
+
+        Returns:
+            ObserverPath: The path obtained from the file or user input.
+        """
+        if input_path and input_path.exists() and not overwrite:
+            path = ObserverPath.get_from_file(input_path)
+        else:
+            path = ObserverPath.get_from_user(hag_sample_input_path=input_path, title=title, aoi=aoi)
+            path.save_to_file(input_path)
+        return path

@@ -1,3 +1,4 @@
+import json
 import logging
 import shutil
 import time
@@ -8,9 +9,102 @@ from pathlib import Path
 import numpy as np
 from rich.console import Console
 
+from models import ProfileConfig, ProjectPaths, RunPaths
+
 LOGGER_LEVEL = logging.DEBUG
 
 console = Console()
+
+
+def load_profile(profile: str | None = None) -> ProfileConfig:
+    import tomllib
+
+    config_path = Path(__file__).parent.parent / "config.toml"
+
+    # load config.toml into memory
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
+
+    if profile not in config:
+        raise ValueError(f"Profile '{profile}' not found in config.toml")
+
+    return ProfileConfig(
+        name=profile,
+        logging_level=config[profile].get("logging_level", "INFO"),
+        remove=config[profile].get("remove", []),
+    )
+
+
+def remove_intermediate_files(project_paths: ProjectPaths, run_paths: RunPaths, profile: str = "testing") -> None:
+    profile_cfg = load_profile(profile)
+
+    project_files = {
+        "aoi": project_paths.aoi,
+        "input_copc": project_paths.input_copc,
+        "rescaled_copc": project_paths.rescaled_copc,
+        "classified_copc": project_paths.classified_copc,
+        "facades_copc": project_paths.facades_copc,
+        "project_log": project_paths.project_log,
+    }
+    run_files = {
+        "run_log": run_paths.run_log,
+        "metadata": run_paths.metadata,
+        "target_point_copc": run_paths.target_point_copc,
+        "output_viewshed_copc_2d": run_paths.output_viewshed_copc_2d,
+        "output_viewshed_tif_2d": run_paths.output_viewshed_tif_2d,
+        "grid_shell_copc": run_paths.grid_shell_copc,
+        "output_viewshed_copc_3d": run_paths.output_viewshed_copc_3d,
+        "output_viewshed_voxel_grid_3d": run_paths.output_viewshed_voxel_grid_3d,
+        "output_flight_height_tif": run_paths.output_flight_height_tif,
+        "viewable_volume_copc": run_paths.viewable_volume_copc,
+    }
+
+    files_to_remove = profile_cfg.get("remove", [])
+    merged_file_map = {**project_files, **run_files}
+    for file_key in files_to_remove:
+        file_path = merged_file_map.get(file_key)
+        if file_path and file_path.exists():
+            file_path.unlink()
+
+
+def write_metadata(run_cfg, project_paths: Path, run_paths: Path, active_profile: str, source_aoi_crs: str, start_time: float) -> None:
+    """Write run metadata to JSON file."""
+    metadata = {
+        "project": {
+            "name": project_paths.name,
+            "folder": str(project_paths.folder),
+            "profile": active_profile,
+            "aoi_source_crs": source_aoi_crs,
+            "processing_crs": "EPSG:28992",
+            "classification_method": "cached",
+        },
+        "run": {
+            "name": run_cfg.name,
+            "folder": str(run_paths.folder),
+            "runtime_seconds": round(time.perf_counter() - start_time, 3),
+            "resolution": run_cfg.resolution,
+            "z_height": run_cfg.z_height,
+            "los": {
+                "mode": run_cfg.los_mode,
+                "radius": run_cfg.los_radius,
+                "min_radius": run_cfg.los_start_radius,
+                "max_radius": run_cfg.los_end_radius,
+                "step_length": run_cfg.los_step_length,
+            },
+            "files": {
+                "input_copc": str(project_paths.input_copc),
+                "rescaled_copc": str(project_paths.rescaled_copc),
+                "classified_copc": str(project_paths.classified_copc),
+                "facades_copc": str(project_paths.facades_copc),
+                "target_point_copc": str(run_paths.target_point_copc),
+                "viewshed_2d_copc": str(run_paths.output_viewshed_copc_2d),
+                "viewshed_3d_copc": str(run_paths.output_viewshed_copc_3d),
+                "flight_height_tif": str(run_paths.output_flight_height_tif),
+                "viewable_volume_copc": str(run_paths.viewable_volume_copc),
+            },
+        },
+    }
+    run_paths.metadata.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
 @contextmanager
