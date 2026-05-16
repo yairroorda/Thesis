@@ -11,6 +11,7 @@ After classification (segment.py), this module:
 """
 
 import json
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,7 @@ from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
 from calculate import load_ground_points
+from models import ProjectConfig
 from utils import get_logger, timed
 
 logger = get_logger(name="EnhanceFacades")
@@ -269,13 +271,24 @@ def generate_facades(
     merge_and_write(input_path, facade_array, output_path)
 
 
-def demo_generate_facades():
-    """Run the full facade generation on a small cropped area for quick testing."""
-    input_path = Path("data/output_classified.copc.laz")
-    output_path = Path("data/output_with_facades.copc.laz")
-
-    generate_facades(input_path=input_path, output_path=output_path, point_spacing=0.3, normal_z_threshold=0.3, cluster_eps=0.5, hull_ratio=0.05)
-
-
 if __name__ == "__main__":
-    demo_generate_facades()
+    from cloudfetch import AHN5, AHN6, ProviderChain
+
+    from models import AOIPolygon, ProjectPaths
+
+    # setup folders and paths
+    paths = ProjectPaths("demo_enhance_facades")
+
+    # get AOI from user
+    aoi = AOIPolygon.get(input_path=paths.aoi)
+
+    # fetch input COPC if not already present
+    if not paths.input_copc.exists():
+        providerchain = ProviderChain([AHN6(data_dir=paths.folder), AHN5(data_dir=paths.folder)]).fetch(
+            aoi=aoi.polygon,
+            aoi_crs=aoi.crs,
+            output_path=paths.input_copc,
+        )
+
+    # generate facades and write output COPC
+    generate_facades(input_path=paths.input_copc, output_path=paths.facades_copc, point_spacing=0.3, normal_z_threshold=0.3, cluster_eps=0.5, hull_ratio=0.05)

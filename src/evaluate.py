@@ -251,39 +251,6 @@ def evaluate_vegetation_influence(
     return output_dir
 
 
-def demo_generate_benchmark_aois():
-    from utils import get_logger
-
-    logger = get_logger(name="AOI Generator Test")
-
-    output_folder = Path("data/benchmark_aois")
-    output_folder.mkdir(exist_ok=True)
-    area_path = Path("data/benchmark_aois/area.geojson")
-
-    # Example usage
-    if not area_path.exists():
-        area_polygon = AOIPolygon.get_from_user("Select area for AOI generation")
-        area_polygon.save_to_file(output_folder / "area.geojson")
-    else:
-        area_polygon = AOIPolygon.get_from_file(area_path)
-
-    aoi_generator = generate_benchmark_aois(size=(500, 1000), area=area_polygon, seed=42)
-    aois = [next(aoi_generator) for i in range(15)]
-
-    gpd.GeoDataFrame(geometry=[aoi.polygon for aoi in aois], crs=aois[0].crs if aois else area_polygon.crs).to_file(
-        output_folder / "aois.geojson",
-        driver="GeoJSON",
-    )
-    logger.info(f"Generated {len(aois)} AOIs and saved to {output_folder / 'aois.geojson'}")
-
-    target = center_target_point_hag(aois[0], hag_m=1.7)
-    target.save_to_file(output_folder / "target.copc.laz")
-    aois[0].save_to_file(output_folder / "aoi_1.geojson")
-
-    # for ix, aoi in enumerate(aois, start=1):
-    #     aoi.save_to_file(output_folder / f"aoi_{ix}.geojson")
-
-
 if __name__ == "__main__":
     area_path = Path("data/vegetation_comp/area.geojson")
     if not area_path.exists():
