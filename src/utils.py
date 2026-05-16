@@ -2,14 +2,18 @@ import json
 import logging
 import shutil
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
 
 import numpy as np
 from rich.console import Console
+from shapely import affinity
+from shapely.geometry import Point as ShapelyPoint
+from shapely.geometry import Polygon
 
-from models import ProfileConfig, ProjectPaths, RunPaths
+from models import AOIPolygon, Point, ProfileConfig, ProjectPaths, RunPaths
 
 LOGGER_LEVEL = logging.DEBUG
 
@@ -211,6 +215,92 @@ def compare(
         logger.debug(f"Length of result 2: {len(result2)}")
         logger.debug(f"Result 1: {result1}")
         logger.debug(f"Result 2: {result2}")
+
+
+def generate_benchmark_aois(
+    size: float | tuple[float, float],
+    area: AOIPolygon,
+    seed: int = 42,
+) -> Iterator[AOIPolygon]:
+    """Yield random square AOIPolygons sampled from the area bounds."""
+    rng = np.random.default_rng(seed)
+
+    if isinstance(size, (tuple, list)):
+        if len(size) != 2:
+            raise ValueError("size must be a number or a 2-item range")
+        size_min = float(size[0])
+        size_max = float(size[1])
+        if size_min <= 0 or size_max <= 0:
+            return
+        if size_max < size_min:
+            raise ValueError("size range must be ordered as (min, max)")
+    else:
+        size_min = size_max = float(size)
+        if size_min <= 0:
+            return
+
+    # Build AOIs in projected CRS so base_size is interpreted in meters.
+    working_area = area.to_crs("EPSG:28992") if area.crs.upper() in {"EPSG:4326", "CRS84", "OGC:CRS84"} else area
+
+    minx, miny, maxx, maxy = working_area.bounds
+    max_attempts = 1000
+    while True:
+        for attempts in range(1, max_attempts + 1):
+            x = float(rng.uniform(minx, maxx))
+            y = float(rng.uniform(miny, maxy))
+
+            if not working_area.contains(ShapelyPoint(x, y)):
+                continue
+
+            curr_size = float(rng.uniform(size_min, size_max))
+            half = curr_size / 2
+            angle = float(rng.uniform(0, 360))
+            square = Polygon([
+                (x - half, y - half),
+                (x + half, y - half),
+                (x + half, y + half),
+                (x - half, y + half),
+            ])
+            aoi = AOIPolygon(
+                affinity.rotate(square, angle, origin="center"),
+                crs=working_area.crs,
+            )
+            if working_area.crs != area.crs:
+                aoi = aoi.to_crs(area.crs)
+
+            yield aoi
+            break
+        else:
+            raise RuntimeError(f"Could not place an AOI center inside the area after {max_attempts} attempts. Try reducing size or changing the area.")
+
+
+def random_target_point(aoi: AOIPolygon, z_range: tuple[float, float], seed: int = 42) -> Point:
+    """Return a random point within the AOI in EPSG:28992 coordinates."""
+    rng = np.random.default_rng(seed)
+    aoi_rd = aoi.to_crs("EPSG:28992") if aoi.crs != "EPSG:28992" else aoi
+    minx, miny, maxx, maxy = aoi_rd.bounds
+    minz, maxz = z_range
+    for _ in range(1000):
+        x = float(rng.uniform(minx, maxx))
+        y = float(rng.uniform(miny, maxy))
+        z = float(rng.uniform(minz, maxz))
+        point = ShapelyPoint(x, y, z)
+        if aoi_rd.contains(point):
+            return Point(x, y, z)
+    raise RuntimeError("Could not find a target point within the AOI after 1000 attempts. Try changing the AOI or seed.")
+
+
+def center_target_point_hag(aoi: AOIPolygon, input_path: Path, hag_m: float = 1.7) -> Point:
+    """Return an AOI-center target at a fixed height above ground (HAG) in EPSG:28992."""
+    from calculate import sample_ground
+
+    aoi_rd = aoi.to_crs("EPSG:28992") if aoi.crs != "EPSG:28992" else aoi
+    center = aoi_rd.polygon.centroid
+    if not aoi_rd.polygon.covers(center):
+        center = aoi_rd.polygon.representative_point()
+
+    ground_z = float(sample_ground(input_path=input_path, points=[Point(float(center.x), float(center.y), 0.0)])[0])
+    return Point(float(center.x), float(center.y), ground_z + hag_m)
 
 
 if __name__ == "__main__":
