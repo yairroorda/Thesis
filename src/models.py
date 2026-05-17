@@ -6,7 +6,7 @@ from typing import List, Literal
 import geopandas as gpd
 import numpy as np
 import pdal
-from pyproj import Transformer
+from pyproj import Transformer, transform
 from shapely.geometry import LineString
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon as ShapelyPolygon
@@ -20,9 +20,8 @@ _TO_LAMBERT = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
 
 def _validate_points_in_aoi(points_xy: list[tuple[float, float]], aoi: "AOIPolygon", labels: list[str]) -> None:
     """Raise when any selected point lies outside the AOI polygon."""
-    aoi_rd = aoi.to_crs("EPSG:28992") if aoi.crs != "EPSG:28992" else aoi
     for (x, y), label in zip(points_xy, labels):
-        if not aoi_rd.covers(ShapelyPoint(x, y)):
+        if not aoi.covers(ShapelyPoint(x, y)):
             raise ValueError(f"{label} is outside the AOI. Please select a point inside the AOI.")
 
 
@@ -104,7 +103,6 @@ class RunPaths:
         self.output_flight_height_tif = self.folder / "flight_height.tif"
         self.viewable_volume_copc = self.folder / "viewshed_3d_viewable_volume.copc.laz"
         self.viewshed_3d_with_obstacle_distance_copc = self.folder / "viewshed_3d_with_obstacle_distance.copc.laz"
-        self.output_viewshed_voxel_3d = self.folder / "viewshed_3d_voxel.copc.laz"
 
 
 class AOIPolygon:
@@ -237,7 +235,7 @@ class Point:
 
     @classmethod
     def get_from_user(cls, hag_sample_input_path: Path, title: str = "Set point", aoi: AOIPolygon | None = None) -> "Point":
-        """Let the user pick one point on the map. Returns (x, y, z) in RD."""
+        """Let the user pick one point on the map. Returns (x, y, z) in project CRS."""
         import tkinter as tk
 
         root, map_widget, controls = make_map(title, aoi=aoi)
@@ -245,9 +243,11 @@ class Point:
         p_xy = {"v": None}
         marker = {"p": None}
 
+        transformer = Transformer.from_crs("EPSG:4326", aoi.crs, always_xy=True)
+
         def on_click(coords):
             lat_c, lon_c = coords[0], coords[1]
-            x, y = _TO_RD.transform(lon_c, lat_c)
+            x, y = transformer.transform(lon_c, lat_c)
 
             if marker["p"] is not None:
                 marker["p"].delete()
@@ -262,7 +262,7 @@ class Point:
         pz.pack(fill=tk.X)
 
         is_hag = tk.BooleanVar(value=True)
-        tk.Checkbutton(controls, text="Z is HAG (vs NAP)", variable=is_hag).pack(anchor="w", pady=(5, 0))
+        tk.Checkbutton(controls, text="Z is HAG (vs orthometric height)", variable=is_hag).pack(anchor="w", pady=(5, 0))
 
         tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(10, 0))
         map_widget.add_left_click_map_command(on_click)
@@ -288,9 +288,9 @@ class Point:
         pt = cls(*p)
 
         if is_hag.get():
-            from calculate import hag_to_nap
+            from calculate import hag_to_ortho
 
-            return hag_to_nap([pt], input_path=hag_sample_input_path)[0]
+            return hag_to_ortho([pt], input_path=hag_sample_input_path)[0]
 
         return pt
 
@@ -300,7 +300,7 @@ class Point:
         point_data = np.array([(self.x, self.y, self.z)], dtype=dtype)
         from calculate import write_to_copc
 
-        write_to_copc(point_data, path, crs=crs)
+        write_to_copc(point_data, path, crs)
 
 
 class Segment:
@@ -316,7 +316,7 @@ class Segment:
 
     @classmethod
     def get_from_user(cls, hag_sample_input_path: Path, title: str = "Set P1/P2", aoi: AOIPolygon | None = None) -> "Segment":
-        """Let the user pick two points on the map. Returns (p1, p2) with p1/p2 as (x, y, z) in RD."""
+        """Let the user pick two points on the map. Returns (p1, p2) with p1/p2 as (x, y, z) in project CRS."""
         import tkinter as tk
 
         root, map_widget, controls = make_map(title, aoi=aoi)
@@ -326,9 +326,11 @@ class Segment:
         p2_xy = {"v": None}
         markers = {"p1": None, "p2": None}
 
+        transformer = Transformer.from_crs("EPSG:4326", aoi.crs, always_xy=True)
+
         def on_click(coords):
             lat_c, lon_c = coords[0], coords[1]
-            x, y = _TO_RD.transform(lon_c, lat_c)
+            x, y = transformer.transform(lon_c, lat_c)
             key = mode.get()
 
             if markers[key] is not None:
@@ -354,7 +356,7 @@ class Segment:
         p2z.pack(fill=tk.X)
 
         is_hag = tk.BooleanVar(value=True)
-        tk.Checkbutton(controls, text="Z is HAG (vs NAP)", variable=is_hag).pack(anchor="w", pady=(5, 0))
+        tk.Checkbutton(controls, text="Z is HAG (vs orthometric height)", variable=is_hag).pack(anchor="w", pady=(5, 0))
 
         tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(10, 0))
         map_widget.add_left_click_map_command(on_click)
@@ -370,9 +372,9 @@ class Segment:
 
         pts = [Point(*p1), Point(*p2)]
         if is_hag.get():
-            from calculate import hag_to_nap
+            from calculate import hag_to_ortho
 
-            pts = hag_to_nap(pts, input_path=hag_sample_input_path)
+            pts = hag_to_ortho(pts, input_path=hag_sample_input_path)
         return cls(pts[0], pts[1])
 
 
@@ -409,6 +411,15 @@ class ObserverPath:
     def __init__(self, linestring: LineString, crs: str = "EPSG:28992"):
         self.linestring = linestring
         self.crs = crs
+
+    def to_crs(self, crs: str) -> "ObserverPath":
+        """Reprojects the path to the target CRS."""
+        if self.crs == crs:
+            return self
+
+        gdf = gpd.GeoDataFrame(geometry=[self.linestring], crs=self.crs)
+        gdf_projected = gdf.to_crs(crs)
+        return ObserverPath(gdf_projected.geometry.iloc[0], crs=crs)
 
     @classmethod
     def get_from_user(cls, hag_sample_input_path: Path, aoi: AOIPolygon, title: str = "Draw Trail for Lookout Search", crs: str = "EPSG:28992") -> "ObserverPath":
@@ -450,20 +461,25 @@ class ObserverPath:
         if len(points_latlon) < 2:
             raise ValueError("A trail must have at least two points.")
 
-        transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        target_crs = aoi.crs if aoi else "EPSG:28992"
+        transformer = Transformer.from_crs("EPSG:4326", target_crs, always_xy=True)
         transformed_points = [transformer.transform(lon, lat) for lat, lon in points_latlon]
-        return cls(LineString(transformed_points), crs=crs)
 
-    def sample_points(self, step_size: float, z_height: float = 0.0) -> list[Point]:
+        return cls(LineString(transformed_points), crs=target_crs)
+
+    def sample_points(self, project_paths: ProjectPaths, step_size: float, z_height: float = 0.0) -> list[Point]:
         """Samples points evenly along the polyline at the requested step size."""
         length = self.linestring.length
         num_samples = max(2, int(np.ceil(length / step_size)) + 1)
         distances = np.linspace(0, length, num_samples)
 
+        from calculate import hag_to_ortho
+
         points = []
         for d in distances:
             pt = self.linestring.interpolate(d)
             points.append(Point(pt.x, pt.y, z_height))
+        points = hag_to_ortho(points, input_path=project_paths.input_copc)
         return points
 
     def save_to_file(self, path: Path, crs: str = "EPSG:28992") -> None:
@@ -498,4 +514,8 @@ class ObserverPath:
         else:
             path = ObserverPath.get_from_user(hag_sample_input_path=input_path, title=title, aoi=aoi)
             path.save_to_file(input_path)
+
+        if path.crs != aoi.crs:
+            path = path.to_crs(aoi.crs)
+
         return path

@@ -8,7 +8,7 @@ from cloudfetch import AHN4
 
 from calculate import calculate_viewshed_2d, export_grid_to_copc, generate_grid, sample_polygon_boundary
 from enhance_facades import generate_facades
-from models import AOIPolygon, Point
+from models import AOIPolygon, Point, ProjectConfig
 from query_threedbag import ThreeDBAG
 from sample_threedbag import sample_on_mesh
 from utils import get_logger
@@ -65,6 +65,11 @@ def filter_buildings(input_path: Path, output_path: Path) -> Path:
 
 def main():
     # setup run
+    project_cfg = ProjectConfig(
+        name="tune_building_threshold",
+        crs="EPSG:28992",
+    )
+
     project_folder = Path("data/Delft_bouwkunde")
     aoi_path = project_folder / "aoi.geojson"
     aoi = AOIPolygon.get_from_file(aoi_path).to_crs("EPSG:28992")
@@ -80,7 +85,7 @@ def main():
     grid_z_height = 50.0
     los_radius = 0.15
     los_step_length = 0.15
-    top_points = generate_grid(aoi, resolution=grid_resolution, z_height=grid_z_height, two_d=True)
+    top_points = generate_grid(Area=aoi, resolution=grid_resolution, z_height=grid_z_height, two_d=True)
     for pt in top_points:
         pt.z = grid_z_height
     boundary_points = sample_polygon_boundary(aoi, sample_distance=grid_resolution, z_height=0.0)
@@ -100,6 +105,7 @@ def main():
     _, _, threedbag_visibility = calculate_viewshed_2d(
         target=target,
         aoi=aoi,
+        project_cfg=project_cfg,
         resolution=grid_resolution,
         radius=los_radius,
         step_length=los_step_length,
@@ -136,6 +142,7 @@ def main():
     _, _, ahn_visibility = calculate_viewshed_2d(
         target=target,
         aoi=aoi,
+        project_cfg=project_cfg,
         resolution=grid_resolution,
         radius=los_radius,
         step_length=los_step_length,

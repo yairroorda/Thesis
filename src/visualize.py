@@ -8,7 +8,7 @@ import rasterio
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
 
-from models import AOIPolygon, ProjectPaths, RunConfig, RunPaths
+from models import AOIPolygon, ProjectConfig, ProjectPaths, RunConfig, RunPaths
 from utils import get_logger, timed
 
 logger = get_logger("Visualize")
@@ -77,7 +77,7 @@ def save_viewshed_as_tif(
         width=width,
         count=1,
         dtype=raster_data.dtype,
-        crs="EPSG:28992",  # Standard Dutch CRS (Amersfoort / RD New)
+        crs=aoi.crs,
         transform=transform,
         nodata=-1.0,
     ) as dst:
@@ -91,11 +91,13 @@ def save_viewshed_as_voxel_grid(
     run_paths: RunPaths,
     run_cfg: RunConfig,
     project_paths: ProjectPaths,
+    project_cfg: ProjectConfig,
     file_type: VoxelFile = "copc",
 ) -> None:
     """
     Save viewshed as a voxel grid by assigning each point to its voxel and
     storing the maximum visibility of all points that fall within that voxel.
+    Uses `project_cfg.crs` for AOI reprojection and output CRS.
     """
     pipeline = pdal.Pipeline(json.dumps({"pipeline": [{"type": "readers.copc", "filename": str(run_paths.output_viewshed_copc_3d)}]}))
     pipeline.execute()
@@ -107,6 +109,7 @@ def save_viewshed_as_voxel_grid(
                 {
                     "type": "writers.copc",
                     "filename": str(run_paths.output_viewshed_voxel_grid_3d),
+                    "a_srs": project_cfg.crs,
                     "forward": "all",
                     "extra_dims": "all",
                 }
@@ -128,7 +131,7 @@ def save_viewshed_as_voxel_grid(
 
     transform = from_origin(min_x - (run_cfg.resolution / 2.0), max_y + (run_cfg.resolution / 2.0), run_cfg.resolution, run_cfg.resolution)
 
-    aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs("EPSG:28992")
+    aoi = AOIPolygon.get_from_file(project_paths.aoi).to_crs(project_cfg.crs)
     aoi_mask = rasterize(
         [(aoi, 1)],
         out_shape=(height, width),
@@ -187,6 +190,7 @@ def save_viewshed_as_voxel_grid(
                 {
                     "type": "writers.copc",
                     "filename": str(run_paths.output_viewshed_voxel_grid_3d),
+                    "a_srs": project_cfg.crs,
                     "forward": "all",
                     "extra_dims": "all",
                 }
@@ -215,8 +219,12 @@ def save_viewshed_as_voxel_grid(
         logger.info(f"Saved 3D viewshed voxel grid in VTI format to {output_vti_path}")
 
 
-def write_to_copc(points_in_cylinder: np.ndarray, output_path: Path, crs: str = "EPSG:28992"):
+def write_to_copc(points_in_cylinder: np.ndarray, output_path: Path, project_cfg: ProjectConfig | str):
+    """Write points to COPC file. Accepts either ProjectConfig object or crs string for backward compatibility."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Handle both ProjectConfig objects and crs strings
+    crs = project_cfg.crs if isinstance(project_cfg, ProjectConfig) else project_cfg
 
     write_pipeline = {
         "pipeline": [

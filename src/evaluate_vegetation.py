@@ -70,7 +70,7 @@ def evaluate_vegetation_influence(
         (project_paths.runs_folder / with_cfg.name).mkdir(parents=True, exist_ok=True)
 
         with_run, with_vis, _ = calculate_3d_viewshed(project_cfg=temp_config, project_paths=project_paths, run_cfg=with_cfg, profile=config.profile)
-        save_viewshed_as_voxel_grid(with_run, with_cfg, project_paths)
+        save_viewshed_as_voxel_grid(with_run, with_cfg, project_paths, project_cfg=temp_config)
         with_voxel = run_dir / "3d_viewshed_voxel_grid_including_vegetation.copc.laz"
         shutil.copy2(with_run.output_viewshed_voxel_grid_3d, with_voxel)
 
@@ -82,7 +82,7 @@ def evaluate_vegetation_influence(
             (project_paths.runs_folder / without_cfg.name).mkdir(parents=True, exist_ok=True)
 
             without_run, without_vis, _ = calculate_3d_viewshed(project_cfg=temp_config, project_paths=project_paths, run_cfg=without_cfg, profile=config.profile)
-            save_viewshed_as_voxel_grid(without_run, without_cfg, project_paths)
+            save_viewshed_as_voxel_grid(without_run, without_cfg, project_paths, project_cfg=temp_config)
         finally:
             calc.VEGETATION_DENSITY_THRESHOLD = original_threshold
 

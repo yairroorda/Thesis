@@ -7,7 +7,7 @@ from scipy.spatial import cKDTree
 from shapely.geometry import Point as ShapelyPoint
 from tqdm import tqdm
 
-from calculate import calculate_intervisibility, export_grid_to_copc, generate_grid
+from calculate import calculate_intervisibility, export_grid_to_copc, generate_grid, hag_to_ortho
 from models import AOIPolygon, Cylinder, ObserverPath, Point, ProjectConfig, ProjectPaths, RunConfig, RunPaths, Segment
 from utils import get_logger, load_profile, write_metadata
 from visualize import write_to_copc
@@ -96,8 +96,8 @@ def calculate_optimal_lookout(
     )
 
     # Sample points along the trail
-    trail_targets = route.sample_points(step_size=trail_sample_distance, z_height=1.8)
-    export_grid_to_copc(trail_targets, run_paths.target_point_copc, crs=project_cfg.crs)
+    trail_targets = route.sample_points(project_paths=project_paths, step_size=trail_sample_distance, z_height=1.8)
+    export_grid_to_copc(trail_targets, run_paths.target_point_copc, project_cfg)
     total_targets = len(trail_targets)
     run_logger.info(f"Loaded {total_targets} trail target points at {trail_sample_distance}m spacing")
 
@@ -113,7 +113,7 @@ def calculate_optimal_lookout(
 
     # Coarse Grid Search
     run_logger.info(f"Coarse search ({coarse_res}m resolution)")
-    coarse_pts = generate_grid(aoi, coarse_res, z_height=observer_height, two_d=True)
+    coarse_pts = generate_grid(Area=aoi, resolution=coarse_res, z_height=observer_height, two_d=True)
 
     best_score, best_pt = score_observers(
         run_cfg=run_cfg,
@@ -163,7 +163,7 @@ def calculate_optimal_lookout(
         out_array[i]["Z"] = pt.z
         out_array[i]["Visibility"] = pct
 
-    write_to_copc(out_array, output_path, crs=project_cfg.crs)
+    write_to_copc(out_array, output_path, project_cfg)
 
     write_metadata(run_cfg, project_paths, run_paths, project_cfg.profile, source_aoi_crs, start_time)
     run_logger.info(f"Optimal lookout found at ({best_pt.x:.1f}, {best_pt.y:.1f}, {best_pt.z:.1f}) with {best_score:.1f}% visibility")

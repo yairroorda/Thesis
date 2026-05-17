@@ -6,11 +6,11 @@ from cloudfetch import AHN1, AHN2, AHN3, AHN4, AHN5, AHN6, CanElevation, IGNLida
 
 from calculate import (
     calculate_2d_viewshed,
-    calculate_3d_flight_height,
     calculate_3d_viewshed,
     calculate_cumulative_viewshed,
 )
 from enhance_facades import generate_facades
+from flight_height import calculate_3d_flight_height
 from lookout import calculate_optimal_lookout
 from models import AOIPolygon, Point, ProjectConfig, ProjectPaths, RunConfig
 from pathfinding import calculate_optimal_route
@@ -70,8 +70,12 @@ def prepare_project(config: ProjectConfig) -> ProjectPaths:
     if not result or not result.exists():
         raise RuntimeError(f"Could not query requested data. Tried datasets in order: {config.dataset}")
 
+    # Classify vegetation
     logger.info(f"Classifying vegetation using method: {config.classification_method}")
-    if config.classification_method == "myria3d":
+    if config.classification_method is None:
+        logger.info("No classification method specified. Skipping vegetation classification.")
+        paths.classified_copc = paths.input_copc
+    elif config.classification_method == "myria3d":
         logger.debug(f"Applying Myria3D vegetation probability threshold: {config.myria3d_vegetation_prob_threshold_pct:.1f}%")
         result = subprocess.run(
             ["pixi", "run", "-e", "myria3d", "python", "src/segment.py", paths.name, config.classification_method, str(config.myria3d_vegetation_prob_threshold_pct)],
@@ -100,12 +104,10 @@ def main():
 
     # Setup project configuration
     project_cfg = ProjectConfig(
-        name="test_project",
-        dataset=["AHN6", "AHN5"],
-        profile="testing",
-        aoi_source=None,
-        overwrite=False,
+        name="test_project_nl",
+        dataset=["AHN5"],
         crs="EPSG:28992",
+        classification_method="myria3d",
     )
 
     # Prepare project (download data, preprocess, etc.)
@@ -119,10 +121,11 @@ def main():
     run_cfg = RunConfig(
         name=run_name,
         overwrite=False,
-        resolution=1.0,
+        resolution=2.0,
         los_mode="fixed",
         los_radius=0.15,
-        z_height=20.0,
+        los_step_length=0.15,
+        z_height=30.0,
         log_level="INFO",
         target_source=None,  # Set later based on which analyses are run
     )
@@ -161,8 +164,18 @@ def main():
             title="Select target point for run",
             aoi=AOIPolygon.get_from_file(project_paths.aoi).to_crs(project_cfg.crs),
         )
-        run_paths, _, _ = calculate_3d_viewshed(project_cfg=project_cfg, project_paths=project_paths, run_cfg=run_cfg, profile=project_cfg.profile)
-        save_viewshed_as_voxel_grid(run_paths=run_paths, run_cfg=run_cfg, project_paths=project_paths)
+        run_paths, _, _ = calculate_3d_viewshed(
+            project_cfg=project_cfg,
+            project_paths=project_paths,
+            run_cfg=run_cfg,
+            profile=project_cfg.profile,
+        )
+        save_viewshed_as_voxel_grid(
+            run_paths=run_paths,
+            run_cfg=run_cfg,
+            project_paths=project_paths,
+            project_cfg=project_cfg,
+        )
 
     if cumulative_viewshed:
         run_paths = calculate_cumulative_viewshed(
@@ -184,7 +197,6 @@ def main():
             project_cfg=project_cfg,
             project_paths=project_paths,
             run_cfg=run_cfg,
-            profile=project_cfg.profile,
             threshold=0,  # a point is considered visible if visibility > threshold
         )
 
@@ -202,9 +214,9 @@ def main():
             project_paths=project_paths,
             run_cfg=run_cfg,
             profile=project_cfg.profile,
-            coarse_res=5,
-            fine_res=1.0,
-            trail_sample_distance=2.0,
+            coarse_res=10,
+            fine_res=2.0,
+            trail_sample_distance=3.0,
             threshold=0.8,  # a point is considered visible if visibility > threshold
         )
 
