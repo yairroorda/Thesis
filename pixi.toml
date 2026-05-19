@@ -21,7 +21,6 @@ rich = ">=14.3.3,<15"
 tkintermapview = "==1.29"
 pyvista = ">=0.47.3, <0.48"
 rasterio = ">=1.5.0, <2"
-rangehttpserver = ">=1.4.0, <2"
 cloudfetch = ">=0.1.2, <0.2"
 
 [feature.thesis.tasks]

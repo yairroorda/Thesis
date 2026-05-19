@@ -1,5 +1,4 @@
 data/*
-viewer/data/*
 .vscode/
 __pycache__/
 
@@ -8,9 +7,3 @@ __pycache__/
 
 */pathfinding.py
 */produce_paths.py
-
-# Potree example files
-
-third_party/potree/examples
-third_party/potree/pointclouds
-third_party/potree/docs
