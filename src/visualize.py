@@ -243,21 +243,81 @@ def write_to_copc(points_in_cylinder: np.ndarray, output_path: Path, project_cfg
     logger.info(f"Wrote {points_in_cylinder.size} points to {output_path}")
 
 
-if __name__ == "__main__":
-    project_root = Path("data/evaluate_vegetation_influence_veg_eval_01_1776769328")
-    run_folder = project_root / "run_01_without"
+def reproject_to_web_mercator(copc_file, output_file):
+    """Reproject a LAZ file to Web Mercator (EPSG:3857) using PDAL."""
 
-    project_paths = ProjectPaths("evaluate_vegetation_influence_veg_eval_01_1776769328")
-    project_paths.aoi = project_root / "aoi.geojson"
+    pipeline_steps = [
+        str(copc_file),
+        {"type": "filters.reprojection", "out_srs": "EPSG:3857", "in_srs": "EPSG:28992"},
+        {
+            "type": "writers.copc",
+            "filename": str(output_file),
+            "forward": "all",
+            "extra_dims": "all",
+        },
+    ]
 
-    run_cfg = RunConfig(resolution=2.0)
-    run_paths = RunPaths(project_paths, "run_01_without")
-    run_paths.output_viewshed_copc_3d = run_folder / "viewshed_3d.copc.laz"
-    run_paths.output_viewshed_voxel_grid_3d = run_folder / "viewshed_3d.copc_voxel.laz"
+    pipeline = {"pipeline": pipeline_steps}
 
-    save_viewshed_as_voxel_grid(
-        run_paths=run_paths,
-        run_cfg=run_cfg,
-        project_paths=project_paths,
-        file_type="copc",
-    )
+    # Convert the pipeline to JSON
+    pipeline_json = json.dumps(pipeline)
+
+    # Create and execute the PDAL pipeline
+    p = pdal.Pipeline(pipeline_json)
+    p.execute()
+
+
+def remap_color_to_16_bit(copc_file: Path, output_file: Path):
+    """Remap RGB color values from 8-bit to 16-bit to satisfy viewer requirements."""
+
+    assign_values = []
+    for channel in ["Red", "Green", "Blue"]:
+        # Multiply by 256 to shift 8-bit values into the 16-bit range
+        assign_values.append(f"{channel}={channel}*256")
+
+    pipeline_steps = [
+        {"type": "readers.copc", "filename": str(copc_file)},
+        {"type": "filters.assign", "value": assign_values},
+        {
+            "type": "writers.copc",
+            "filename": str(output_file),
+            "forward": "all",
+            "extra_dims": "all",
+        },
+    ]
+
+    pdal.Pipeline(json.dumps(pipeline_steps)).execute()
+
+
+def hijack_intensity(copc_file: Path, output_file: Path):
+    """Hijack the viewshed intensity channel for the viewer."""
+
+    pipeline_steps = [
+        str(copc_file),
+        {
+            "type": "filters.assign",
+            "value": ["Intensity = Visibility * 65535"],
+        },
+        {"type": "filters.reprojection", "out_srs": "EPSG:3857", "in_srs": "EPSG:28992"},
+        {
+            "type": "writers.copc",
+            "filename": str(output_file),
+        },
+    ]
+
+    pdal.Pipeline(json.dumps(pipeline_steps)).execute()
+
+
+def main(input_file: Path, color_8_bit: bool = False, hijack: bool = False):
+    output_dir = Path("viewer/data")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_file = output_dir / input_file.name
+
+    reproject_to_web_mercator(str(input_file), str(output_file))
+
+    if color_8_bit:
+        remap_color_to_16_bit(output_file, output_file)
+
+    if hijack:
+        hijack_intensity(output_file, output_file)
