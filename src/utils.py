@@ -274,22 +274,6 @@ def generate_benchmark_aois(
             raise RuntimeError(f"Could not place an AOI center inside the area after {max_attempts} attempts. Try reducing size or changing the area.")
 
 
-def random_target_point(aoi: AOIPolygon, z_range: tuple[float, float], seed: int = 42) -> Point:
-    """Return a random point within the AOI in EPSG:28992 coordinates."""
-    rng = np.random.default_rng(seed)
-    aoi_rd = aoi.to_crs("EPSG:28992") if aoi.crs != "EPSG:28992" else aoi
-    minx, miny, maxx, maxy = aoi_rd.bounds
-    minz, maxz = z_range
-    for _ in range(1000):
-        x = float(rng.uniform(minx, maxx))
-        y = float(rng.uniform(miny, maxy))
-        z = float(rng.uniform(minz, maxz))
-        point = ShapelyPoint(x, y, z)
-        if aoi_rd.contains(point):
-            return Point(x, y, z)
-    raise RuntimeError("Could not find a target point within the AOI after 1000 attempts. Try changing the AOI or seed.")
-
-
 def center_target_point_hag(aoi: AOIPolygon, input_path: Path, hag_m: float = 1.7) -> Point:
     """Return an AOI-center target at a fixed height above ground (HAG) in EPSG:28992."""
     from calculate import sample_ground

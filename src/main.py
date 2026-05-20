@@ -22,8 +22,8 @@ logger = get_logger(name="Main")
 
 
 @timed("Prepare project")
-def prepare_project(config: ProjectConfig) -> ProjectPaths:
-    paths = ProjectPaths(config.name)
+def prepare_project(config: ProjectConfig, aoi: AOIPolygon = None, base_dir: Path = None) -> ProjectPaths:
+    paths = ProjectPaths(config.name, base_dir=base_dir)
 
     profile_cfg = load_profile(config.profile)
     log_level = profile_cfg.logging_level
@@ -40,7 +40,7 @@ def prepare_project(config: ProjectConfig) -> ProjectPaths:
             if artifact.exists():
                 artifact.unlink()
 
-    aoi = AOIPolygon.get(
+    aoi = aoi or AOIPolygon.get(
         input_path=paths.aoi,
         title=f"Draw AOI for project {config.name}",
         overwrite=config.overwrite,
@@ -78,7 +78,18 @@ def prepare_project(config: ProjectConfig) -> ProjectPaths:
     elif config.classification_method == "myria3d":
         logger.debug(f"Applying Myria3D vegetation probability threshold: {config.myria3d_vegetation_prob_threshold_pct:.1f}%")
         result = subprocess.run(
-            ["pixi", "run", "-e", "myria3d", "python", "src/segment.py", paths.name, config.classification_method, str(config.myria3d_vegetation_prob_threshold_pct)],
+            [
+                "pixi",
+                "run",
+                "-e",
+                "myria3d",
+                "python",
+                "src/segment.py",
+                paths.name,
+                config.classification_method,
+                str(config.myria3d_vegetation_prob_threshold_pct),
+                str(paths.folder),
+            ],
             check=False,
         )
         if result.returncode != 0:

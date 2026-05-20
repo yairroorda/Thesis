@@ -240,7 +240,7 @@ if __name__ == "__main__":
         vegetation_proba_threshold_pct = float(sys.argv[3]) if len(sys.argv) > 3 else 90.0
         logger.info(f"Starting vegetation classification in mode: {classification_method}")
 
-        run_folder = Path("data") / name
+        run_folder = Path(sys.argv[4]) if len(sys.argv) > 4 else Path("data")
         input_copc_path = run_folder / "input.copc.laz"
         rescaled_path = run_folder / "rescaled.copc.laz"
         output_classified_path = run_folder / "classified.copc.laz"

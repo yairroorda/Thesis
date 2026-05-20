@@ -1,18 +1,16 @@
 import json
-import subprocess
 from pathlib import Path
 
 import numpy as np
 import pdal
-from cloudfetch import AHN4
 
-from calculate import calculate_viewshed_2d, export_grid_to_copc, generate_grid, sample_polygon_boundary
-from enhance_facades import generate_facades
-from models import AOIPolygon, Point, ProjectConfig
+from calculate import calculate_3d_viewshed, generate_grid
+from main import prepare_project
+from models import AOIPolygon, ProjectConfig, ProjectPaths, RunConfig, RunPaths
 from query_threedbag import ThreeDBAG
 from sample_threedbag import sample_on_mesh
-from utils import get_logger
-from visualize import save_viewshed_as_tif
+from utils import generate_benchmark_aois, get_logger
+from visualize import save_viewshed_as_voxel_grid
 
 logger = get_logger(name="TuneBuilding")
 
@@ -29,7 +27,7 @@ def get_sampled_threedbag(aoi: AOIPolygon, obj_path: Path, sampled_path: Path, f
     filter_to_aoi(
         input_path=sampled_path,
         output_path=filtered_path,
-        aoi=aoi,
+        aoi=aoi.to_crs("EPSG:28992"),
     )
 
     return filtered_path
@@ -63,101 +61,180 @@ def filter_buildings(input_path: Path, output_path: Path) -> Path:
     return output_path
 
 
+def load_voxel_grid(path: Path) -> np.ndarray:
+    """Helper to load a point cloud array using PDAL."""
+    pipeline = pdal.Pipeline(json.dumps({"pipeline": [{"type": "readers.copc", "filename": str(path)}]}))
+    pipeline.execute()
+    return pipeline.arrays[0]
+
+
+def compare_voxel_grid(path_my_method: Path, path_3dbag: Path, visibility_threshold: float = 0.0) -> dict[str, float]:
+    """
+    Compares two viewshed voxel grids and returns a confusion matrix.
+    Assumes 3DBAG is the 'Ground Truth' and My Method is the 'Prediction'.
+    """
+    logger.info(f"Comparing {path_my_method.name} vs {path_3dbag.name}")
+
+    # Load the data arrays
+    arr_my = load_voxel_grid(path_my_method)
+    arr_3dbag = load_voxel_grid(path_3dbag)
+
+    # Safety check: Ensure both arrays are exactly the same size
+    if len(arr_my) != len(arr_3dbag):
+        raise ValueError(f"Grid size mismatch! My method: {len(arr_my)}, 3DBAG: {len(arr_3dbag)}.")
+
+    # Sort both arrays geometrically (by Z, then Y, then X) to guarantee alignment
+    order_my = np.lexsort((arr_my["X"], arr_my["Y"], arr_my["Z"]))
+    arr_my = arr_my[order_my]
+
+    order_3d = np.lexsort((arr_3dbag["X"], arr_3dbag["Y"], arr_3dbag["Z"]))
+    arr_3dbag = arr_3dbag[order_3d]
+
+    # Binarize visibility based on the threshold
+    # Assuming any Visibility > 0 means the voxel is visible
+    pred_visible = arr_my["Visibility"] > visibility_threshold
+    truth_visible = arr_3dbag["Visibility"] > visibility_threshold
+
+    # Calculate Confusion Matrix
+    total = len(pred_visible)
+
+    # True Positives: Both say it's visible
+    tp = np.sum(pred_visible & truth_visible)
+
+    # True Negatives: Both say it's blocked
+    tn = np.sum((~pred_visible) & (~truth_visible))
+
+    # False Positives: Prediction says visible, but Truth says blocked
+    fp = np.sum(pred_visible & (~truth_visible))
+
+    # False Negatives: Prediction says blocked, but Truth says visible
+    fn = np.sum((~pred_visible) & truth_visible)
+
+    # Convert to percentages
+    metrics = {"total_voxels": int(total), "TP_pct": float(tp / total) * 100, "TN_pct": float(tn / total) * 100, "FP_pct": float(fp / total) * 100, "FN_pct": float(fn / total) * 100, "Accuracy_pct": float((tp + tn) / total) * 100}
+
+    logger.info(f"Results: Accuracy: {metrics['Accuracy_pct']:.2f}% | TP: {metrics['TP_pct']:.2f}%, TN: {metrics['TN_pct']:.2f}%, FP: {metrics['FP_pct']:.2f}%, FN: {metrics['FN_pct']:.2f}%")
+
+    return metrics
+
+
 def main():
-    # setup run
-    project_cfg = ProjectConfig(
-        name="tune_building_threshold",
-        crs="EPSG:28992",
+
+    base_dir = Path("experiments/tune_building_threshold")
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    aoi_samples = generate_benchmark_aois(
+        size=100,  # size of AOI in meters
+        area=AOIPolygon.get(input_path=base_dir / "sample_area.json", title="Sample Area"),
     )
 
-    project_folder = Path("data/Delft_bouwkunde")
-    aoi_path = project_folder / "aoi.geojson"
-    aoi = AOIPolygon.get_from_file(aoi_path).to_crs("EPSG:28992")
+    # Build up test set of prepared projects
+    for idx in range(1):
+        project_config = ProjectConfig(
+            name=f"tune_building_threshold_{idx}",
+            crs="EPSG:28992",
+            dataset=["AHN5"],
+            classification_method=None,
+            overwrite=False,
+        )
+        project_paths = ProjectPaths(project_name=project_config.name, base_dir=base_dir)
+        aoi = next(aoi_samples)
+        AOIPolygon.save_to_file(aoi, project_paths.aoi)
 
-    target_path = project_folder / "target_point.copc.laz"
-    target = Point.get_from_file(target_path)
+        # Setup project paths and data for this AOI
+        project_paths = prepare_project(project_config, aoi=aoi, base_dir=base_dir)
+        just_buildings_path = project_paths.folder / "just_buildings.copc.laz"
+        filter_buildings(input_path=project_paths.facades_copc, output_path=just_buildings_path)
 
-    run_name = "tune_building_threshold"
-    run_folder = project_folder / run_name
-    run_folder.mkdir(parents=True, exist_ok=True)
+        # Add 3DBAG "perfect" point cloud for this AOI
+        get_sampled_threedbag(
+            aoi=aoi,
+            obj_path=project_paths.folder / "threedbag.obj",
+            sampled_path=project_paths.folder / "threedbag_sampled.copc.laz",
+            filtered_path=project_paths.folder / "threedbag_sampled_filtered.copc.laz",
+        )
 
-    grid_resolution = 1.0
-    grid_z_height = 50.0
-    los_radius = 0.15
-    los_step_length = 0.15
-    top_points = generate_grid(Area=aoi, resolution=grid_resolution, z_height=grid_z_height, two_d=True)
-    for pt in top_points:
-        pt.z = grid_z_height
-    boundary_points = sample_polygon_boundary(aoi, sample_distance=grid_resolution, z_height=0.0)
-    wall_zs = np.arange(0, grid_z_height + grid_resolution, grid_resolution)
-    wall_points = [Point(pt.x, pt.y, z) for pt in boundary_points for z in wall_zs]
-    export_grid_to_copc(top_points + wall_points, output_path=run_folder / "grid_points_3d_shell.copc.laz")
+        # run analysis comparing just_buildings_path to threedbag_sampled_filtered.copc.laz
+        # generate grid of target points
+        targets = generate_grid(
+            Area=aoi.to_crs("EPSG:28992"),
+            resolution=10.0,
+            z_height=1.8,
+            hag_base=project_paths.input_copc,
+        )
 
-    # get threedbag file ready
-    obj_path = run_folder / "3dbag_lod22_merged_delft.obj"
-    sampled_path = run_folder / "3dbag_sampled_perfect.copc.laz"
-    threedbag_filtered_path = run_folder / "3dbag_filtered.copc.laz"
+        # calculate viewsheds for each target point
+        # calculate viewsheds for each target point
+        for idx, target in enumerate(targets):
+            # Normal method run
+            run_config_my = RunConfig(
+                name=f"run_{idx}_normal_method",
+                overwrite=False,
+                z_height=10.0,
+            )
+            run_paths_my = RunPaths(project_paths, run_config_my.name)
+            run_paths_my.folder.mkdir(parents=True, exist_ok=True)
 
-    get_sampled_threedbag(aoi=aoi, obj_path=obj_path, sampled_path=sampled_path, filtered_path=threedbag_filtered_path)
+            # Save the grid target
+            target.save_to_file(run_paths_my.target_point_copc)
+            run_config_my.target_source = run_paths_my.target_point_copc
 
-    # calculate 2d viewshed on 3DBAG points
-    threedbag_viewshed_path = run_folder / "3dbag_viewshed_2d.copc.laz"
-    _, _, threedbag_visibility = calculate_viewshed_2d(
-        target=target,
-        aoi=aoi,
-        project_cfg=project_cfg,
-        resolution=grid_resolution,
-        radius=los_radius,
-        step_length=los_step_length,
-        input_path=threedbag_filtered_path,
-        output_path=threedbag_viewshed_path,
-        z_offset=0.3,
-    )
-    save_viewshed_as_tif(
-        x_coords=threedbag_visibility["X"],
-        y_coords=threedbag_visibility["Y"],
-        visibility_values=threedbag_visibility["Visibility"],
-        aoi=aoi,
-        resolution=grid_resolution,
-        output_path=threedbag_viewshed_path.with_suffix(".tif"),
-    )
+            project_paths.facades_copc = just_buildings_path
+            # Execute calculate and voxelize
+            calculate_3d_viewshed(
+                project_cfg=project_config,
+                project_paths=project_paths,
+                run_cfg=run_config_my,
+                profile=project_config.profile,
+            )
+            save_viewshed_as_voxel_grid(
+                run_paths=run_paths_my,
+                run_cfg=run_config_my,
+                project_paths=project_paths,
+                project_cfg=project_config,
+            )
 
-    # get AHN4 point cloud file ready
+            # 3DBAG run
+            run_config_3dbag = RunConfig(
+                name=f"run_{idx}_3dbag",
+                overwrite=False,
+                z_height=10.0,
+            )
+            run_paths_3dbag = RunPaths(project_paths, run_config_3dbag.name)
+            run_paths_3dbag.folder.mkdir(parents=True, exist_ok=True)
 
-    ahn_input = run_folder / "input.copc.laz"
-    ahn_classified_path = run_folder / "classified.copc.laz"
-    ahn_facades_path = run_folder / "facades.copc.laz"
-    ahn_filtered_path = run_folder / "filtered.copc.laz"
+            # Save the same grid target to the new run folder
+            target.save_to_file(run_paths_3dbag.target_point_copc)
+            run_config_3dbag.target_source = run_paths_3dbag.target_point_copc
 
-    ahn4 = AHN4(data_dir=run_folder)
-    ahn_fetch_result = ahn4.fetch(aoi=aoi.polygon, output_path=ahn_input, aoi_crs=aoi.crs)
-    if not ahn_fetch_result or not ahn_fetch_result.exists():
-        raise RuntimeError("Failed to fetch AHN4 data for AOI.")
-    subprocess.run(f"pixi run -e myria3d python src/segment.py {run_name} {'myria3d'}", shell=True)
-    generate_facades(ahn_classified_path, ahn_facades_path, point_spacing=0.2)
-    filter_buildings(ahn_facades_path, ahn_filtered_path)
+            # Swap facades to 3DBAG mesh
+            project_paths.facades_copc = project_paths.folder / "threedbag_sampled_filtered.copc.laz"
 
-    # calculate 2d viewshed on AHN4 points
-    ahn_viewshed_path = run_folder / "ahn_viewshed_2d.copc.laz"
-    _, _, ahn_visibility = calculate_viewshed_2d(
-        target=target,
-        aoi=aoi,
-        project_cfg=project_cfg,
-        resolution=grid_resolution,
-        radius=los_radius,
-        step_length=los_step_length,
-        input_path=ahn_filtered_path,
-        output_path=ahn_viewshed_path,
-        z_offset=0.3,
-    )
-    save_viewshed_as_tif(
-        x_coords=ahn_visibility["X"],
-        y_coords=ahn_visibility["Y"],
-        visibility_values=ahn_visibility["Visibility"],
-        aoi=aoi,
-        resolution=grid_resolution,
-        output_path=ahn_viewshed_path.with_suffix(".tif"),
-    )
+            # Execute calculate and voxelize
+            calculate_3d_viewshed(
+                project_cfg=project_config,
+                project_paths=project_paths,
+                run_cfg=run_config_3dbag,
+                profile=project_config.profile,
+            )
+            save_viewshed_as_voxel_grid(
+                run_paths=run_paths_3dbag,
+                run_cfg=run_config_3dbag,
+                project_paths=project_paths,
+                project_cfg=project_config,
+            )
+
+            # Now that both voxel grids are saved to disk, compare them
+            metrics = compare_voxel_grid(
+                path_my_method=run_paths_my.output_viewshed_voxel_grid_3d,
+                path_3dbag=run_paths_3dbag.output_viewshed_voxel_grid_3d,
+                visibility_threshold=0.0,  # Any voxel with > 0.0 visibility is considered 'Visible'
+            )
+
+            # Save metrics to a JSON file in the main project folder
+            comparison_log = project_paths.folder / f"comparison_{idx}.json"
+            with open(comparison_log, "w") as f:
+                json.dump(metrics, f, indent=4)
 
 
 if __name__ == "__main__":

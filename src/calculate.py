@@ -79,7 +79,7 @@ def load_ground_points(input_path: Path) -> tuple[cKDTree, np.ndarray]:
     return cKDTree(ground_xy), ground_z
 
 
-def generate_grid(Area: AOIPolygon, resolution: int, z_height: float = 0.0, two_d: bool = False) -> list[Point]:
+def generate_grid(Area: AOIPolygon, resolution: int, z_height: float = 0.0, two_d: bool = False, hag_base: Path | None = None) -> list[Point]:
     """Generate a grid of points within the given area polygon, with the specified resolution and optional Z height."""
     min_x, min_y, max_x, max_y = Area.bounds
 
@@ -99,6 +99,12 @@ def generate_grid(Area: AOIPolygon, resolution: int, z_height: float = 0.0, two_
     mask = contains(Area.polygon, geom_points)
 
     filtered = all_points[mask]
+
+    # translate to HAG
+    if hag_base:
+        ground_levels = sample_ground(input_path=hag_base, points=[Point(x, y, 0) for x, y in filtered[:, :2]])
+        filtered[:, 2] += ground_levels
+
     return [Point(x, y, z) for x, y, z in filtered]
 
 
@@ -629,11 +635,6 @@ def calculate_3d_viewshed(
     wall_zs = np.arange(0, run_cfg.z_height + run_cfg.resolution, run_cfg.resolution)
     wall_points = [Point(pt.x, pt.y, z) for pt in boundary_points for z in wall_zs]
     grid_points = top_points + wall_points
-
-    grid_points = hag_to_ortho(grid_points, input_path=project_paths.input_copc)
-
-    # save grid as COPC for pathplanning (run-level)
-    export_grid_to_copc(grid_points, output_path=run_paths.grid_shell_copc, project_cfg=project_cfg)
 
     grid_points_ortho = hag_to_ortho(grid_points, input_path=project_paths.input_copc)
 
