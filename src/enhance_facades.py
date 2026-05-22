@@ -11,7 +11,6 @@ After classification (segment.py), this module:
 """
 
 import json
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +20,7 @@ from shapely import concave_hull
 from shapely.geometry import MultiPoint
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from calculate import load_ground_points
 from models import ProjectConfig
@@ -250,15 +250,17 @@ def generate_facades(
 
     # Calculate facade points for each building cluster and accumulate
     all_facade_coords: list[np.ndarray] = []
-    for label in tqdm(unique_labels, desc="Generating facades"):
-        cluster = roof_pts[labels == label]
-        boundary = boundary_from_cluster(cluster, hull_ratio)
-        if boundary is None:
-            logger.debug(f"Cluster {label}: too small for boundary (n={len(cluster)}), skipping")
-            continue
-        facade_coords = generate_facade_points(boundary, point_spacing, ground_tree=ground_tree, ground_z_all=ground_z)
-        if facade_coords.size > 0:
-            all_facade_coords.append(facade_coords)
+
+    with logging_redirect_tqdm():
+        for label in tqdm(unique_labels, desc="Generating facades"):
+            cluster = roof_pts[labels == label]
+            boundary = boundary_from_cluster(cluster, hull_ratio)
+            if boundary is None:
+                logger.debug(f"Cluster {label}: too small for boundary (n={len(cluster)}), skipping")
+                continue
+            facade_coords = generate_facade_points(boundary, point_spacing, ground_tree=ground_tree, ground_z_all=ground_z)
+            if facade_coords.size > 0:
+                all_facade_coords.append(facade_coords)
 
     if not all_facade_coords:
         logger.warning("No facade points generated — skipping merge.")
