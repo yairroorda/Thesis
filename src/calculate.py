@@ -6,11 +6,9 @@ from typing import Callable, Literal
 
 import numpy as np
 import pdal
-from pyproj import Transformer
 from scipy.spatial import cKDTree
 from shapely import contains
 from shapely import points as shapely_points
-from shapely.geometry import Point as ShapelyPoint
 from tqdm import tqdm
 
 from models import AOIPolygon, Cylinder, Point, ProjectConfig, ProjectPaths, RunConfig, RunPaths, Segment
@@ -31,17 +29,6 @@ BEER_LAMBERT_COEFFICIENT = 0.05
 DEFAULT_CHUNK_SIZE = 3.0
 
 RadiusMode = Literal["fixed", "widening_linear"]
-
-_TO_RD = Transformer.from_crs("EPSG:4326", "EPSG:28992", always_xy=True)
-
-
-def _validate_points_in_aoi(points_xy: list[tuple[float, float]], aoi: AOIPolygon, labels: list[str]) -> None:
-    """Raise when any selected point lies outside the AOI polygon."""
-
-    aoi_rd = aoi.to_crs("EPSG:28992") if aoi.crs != "EPSG:28992" else aoi
-    for (x, y), label in zip(points_xy, labels):
-        if not aoi_rd.covers(ShapelyPoint(x, y)):
-            raise ValueError(f"{label} is outside the AOI. Please select a point inside the AOI.")
 
 
 def sample_ground(input_path: Path, points: list[Point], k: int = 1, ground_tree: cKDTree | None = None, ground_z: np.ndarray | None = None) -> np.ndarray:
@@ -139,50 +126,6 @@ def export_grid_to_copc(grid_points: list[Point], output_path: Path, project_cfg
     write_to_copc(point_data, output_path, project_cfg)
 
 
-def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> tuple[np.ndarray[bool], np.ndarray[float]]:
-    segment = cylinder.segment
-
-    p1_array = segment.point1.array_coords
-
-    # Vector from p1 to all points (w)
-    w = point_array - p1_array
-
-    # Projection parameter t = (w·v) / |v|^2
-    dots = w @ segment.vector  # w·v
-    denom = segment.length_squared  # |v|^2
-    t = np.clip(dots / denom, 0.0, 1.0)  # Clip t to the range [0, 1] to stay within the segment
-
-    # Calculate the squared distance to the closest point on the segment
-    # The formula: distances_squared = |w|^2 + t^2|v|^2 - 2t(w·v)
-    w_mag_sq = np.einsum("ij,ij->i", w, w)
-    distances_squared = w_mag_sq + (t**2 * denom) - (2 * t * dots)
-    radius = cylinder.radius_at_t(t)
-
-    # Return a boolean mask of points within the specified radius, and the projection parameters
-    return distances_squared <= radius**2, t
-
-
-def get_kdtree_candidate_indices(KDtree: cKDTree, cylinder: Cylinder) -> np.ndarray[int]:
-    """
-    Generate candidate point indices from a KD-tree within a radius of the line segment.
-    """
-    segment = cylinder.segment
-    radius = cylinder.radius
-    step = cylinder.step_length
-    num_samples = max(2, int(np.ceil(segment.length / step)) + 1)
-    t = np.linspace(0.0, 1.0, num_samples, dtype=np.float64)
-    samples = segment.point1.array_coords + t[:, None] * segment.vector
-
-    # calculate query radius knowing R_sphere = sqrt(r_cylinder² + (step²/4))
-    query_radius = np.sqrt(radius**2 + (step**2 / 4))
-    candidate_lists = KDtree.query_ball_point(samples, r=query_radius, workers=1)  # workers=-1 causes too much overhead for small queries.
-
-    if len(candidate_lists) == 0:
-        return np.array([], dtype=np.int64)
-
-    return np.unique(np.concatenate([np.asarray(candidate, dtype=np.int64) for candidate in candidate_lists]))
-
-
 def get_PDAL_bounds_for_runs(point_pairs: list[Segment], radius: float) -> str:
     """Calculate the bounding box that contains all point pairs, expanded by the radius."""
     all_points = np.array(
@@ -238,6 +181,29 @@ def load_points_for_runs(point_pairs: list[Segment], radius: float, input_path: 
     return array_points, array_coords, KDtree
 
 
+def get_distance_mask(point_array: np.ndarray[Point], cylinder: Cylinder) -> tuple[np.ndarray[bool], np.ndarray[float]]:
+    segment = cylinder.segment
+
+    p1_array = segment.point1.array_coords
+
+    # Vector from p1 to all points (w)
+    w = point_array - p1_array
+
+    # Projection parameter t = (w·v) / |v|^2
+    dots = w @ segment.vector  # w·v
+    denom = segment.length_squared  # |v|^2
+    t = np.clip(dots / denom, 0.0, 1.0)  # Clip t to the range [0, 1] to stay within the segment
+
+    # Calculate the squared distance to the closest point on the segment
+    # The formula: distances_squared = |w|^2 + t^2|v|^2 - 2t(w·v)
+    w_mag_sq = np.einsum("ij,ij->i", w, w)
+    distances_squared = w_mag_sq + (t**2 * denom) - (2 * t * dots)
+    radius = cylinder.radius_at_t(t)
+
+    # Return a boolean mask of points within the specified radius, and the projection parameters
+    return distances_squared <= radius**2, t
+
+
 # @timed("Intervisibility calculation")
 def calculate_intervisibility(
     cylinder: Cylinder,
@@ -289,10 +255,11 @@ def calculate_intervisibility(
         t_chunk = np.linspace(start_step / num_steps, end_step / num_steps, (end_step - start_step) + 1)
         chunk_samples = segment.point1.array_coords + t_chunk[:, None] * segment.vector
         chunk_max_radius = np.max(cylinder.radius_at_t(t_chunk))
+        # calculate query radius knowing R_sphere = sqrt(r_cylinder² + (step²/4))
         query_radius = np.sqrt(chunk_max_radius**2 + (step_length**2 / 4))
 
         # Batch query the KDTree for the chunk
-        candidate_lists = KDtree.query_ball_point(chunk_samples, r=query_radius)
+        candidate_lists = KDtree.query_ball_point(chunk_samples, r=query_radius, workers=1)  # workers=-1 causes too much overhead for small queries.
 
         # Filter out empty lists and flatten unique indices
         valid_candidates = [c for c in candidate_lists if c]
