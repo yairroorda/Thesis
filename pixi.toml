@@ -22,6 +22,7 @@ tkintermapview = "==1.29"
 pyvista = ">=0.47.3, <0.48"
 rasterio = ">=1.5.0, <2"
 cloudfetch = ">=0.1.2, <0.2"
+seaborn = ">=0.13.2, <0.14"
 
 [feature.thesis.tasks]
 pipeline = { cmd = "python src/main.py", description = "Run full pipeline" }
