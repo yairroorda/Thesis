@@ -20,10 +20,8 @@ from shapely import concave_hull
 from shapely.geometry import MultiPoint
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 
 from calculate import load_ground_points
-from models import ProjectConfig
 from utils import get_logger, timed
 
 logger = get_logger(name="EnhanceFacades")
@@ -61,7 +59,7 @@ def filter_roof_points(building_pts: np.ndarray, normal_z_threshold: float) -> n
     """
     normal_z = np.abs(building_pts["NormalZ"])
     mask = normal_z > normal_z_threshold
-    logger.info(f"Roof filter: keeping {{{mask.sum()}}} / {len(building_pts)} building points (|NormalZ| > {normal_z_threshold:.2f})")
+    logger.info(f"Roof filter: keeping {mask.sum() / len(building_pts) * 100:.2f}% of building points (|NormalZ| > {normal_z_threshold:.2f})")
     return building_pts[mask]
 
 
@@ -149,7 +147,7 @@ def generate_facade_points(
     if not samples:
         return np.empty((0, 3))
 
-    ground_z = ground_z_all[ground_tree.query(np.array([(x, y) for x, y, _ in samples], dtype=np.float64), k=1, workers=-1)[1]]
+    ground_z = ground_z_all[ground_tree.query(np.array([(x, y) for x, y, _ in samples], dtype=np.float64), k=1)[1]]
 
     for (x, y, z_roof), z_ground in zip(samples, ground_z):
         if z_roof <= z_ground:
@@ -251,16 +249,20 @@ def generate_facades(
     # Calculate facade points for each building cluster and accumulate
     all_facade_coords: list[np.ndarray] = []
 
-    with logging_redirect_tqdm():
-        for label in tqdm(unique_labels, desc="Generating facades"):
-            cluster = roof_pts[labels == label]
-            boundary = boundary_from_cluster(cluster, hull_ratio)
-            if boundary is None:
-                logger.debug(f"Cluster {label}: too small for boundary (n={len(cluster)}), skipping")
-                continue
-            facade_coords = generate_facade_points(boundary, point_spacing, ground_tree=ground_tree, ground_z_all=ground_z)
-            if facade_coords.size > 0:
-                all_facade_coords.append(facade_coords)
+    pbar = tqdm(unique_labels, desc="Generating facades")
+    total_skips = 0
+    for label in pbar:
+        cluster = roof_pts[labels == label]
+        boundary = boundary_from_cluster(cluster, hull_ratio)
+
+        if boundary is None:
+            total_skips += 1
+            pbar.set_postfix(skipped=f"{total_skips}/{len(unique_labels)}")  # update what percentage of clusters were skipped due to insufficient points or empty hull
+            continue
+
+        facade_coords = generate_facade_points(boundary, point_spacing, ground_tree=ground_tree, ground_z_all=ground_z)
+        if facade_coords.size > 0:
+            all_facade_coords.append(facade_coords)
 
     if not all_facade_coords:
         logger.warning("No facade points generated — skipping merge.")

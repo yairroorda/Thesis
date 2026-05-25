@@ -53,7 +53,7 @@ def run_evaluation(export_ray_points: bool = False):
         name="evaluate_query_radius",
         dataset=["AHN5"],
         crs="EPSG:28992",
-        classification_method="None",
+        classification_method=None,
     )
 
     logger.info("Initializing project for benchmark...")
