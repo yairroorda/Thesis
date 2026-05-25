@@ -231,6 +231,20 @@ if __name__ == "__main__":
         percentages = [50.0, 70.0, 90.0, 99.0]
         folder_name = "test_myria3d"
         run_test_myria3d_threshold_sweep(percentages=percentages, folder_name=folder_name)
+    elif sys.argv[1] == "--explicit":
+        # New mode: bypass the run_folder logic and accept exact file paths
+        # Usage: python src/segment.py --explicit myria3d <input_path> <output_path> <threshold>
+        classification_method = sys.argv[2]
+        input_copc_path = Path(sys.argv[3])
+        output_classified_path = Path(sys.argv[4])
+        vegetation_proba_threshold_pct = float(sys.argv[5])
+
+        if classification_method == "myria3d":
+            classify_vegetation_myria3d(input_copc_path, output_classified_path, vegetation_proba_threshold_pct)
+        else:
+            classify_vegetation_rule_based(input_copc_path, output_classified_path)
+
+        sys.exit(0)
     else:
         if len(sys.argv) < 3:
             raise SystemExit("Usage: python src/segment.py <run_name> <myria3d|rule-based> [threshold_pct]")
