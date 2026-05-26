@@ -132,7 +132,7 @@ def run_myria_sweep(run_folder: Path) -> Path:
     # Sweep Logic in Memory
     results = []
     logger.info("Sweeping Myria3D thresholds...")
-    myria3d_thresholds = np.linspace(10, 99, 50)
+    myria3d_thresholds = np.linspace(10, 95, 50)
 
     for method_name, out_path in myria3d_outputs.items():
         arr = load_copc_to_numpy(out_path)
@@ -225,10 +225,7 @@ def plot_myria_threshold_dynamics(df_myria: pd.DataFrame, output_dir: Path):
     methods = df_myria["Method"].unique()
     palette = sns.color_palette("colorblind", len(methods))
 
-    myria_key_thresholds = [50, 70, 80, 90, 95, 99]
-
-    # limit plot to >50% confidence range for better visibility of dynamics
-    df_myria = df_myria[df_myria["Threshold"] > 50]
+    myria_key_thresholds = [10, 50, 70, 80, 90, 95]
 
     for idx, method in enumerate(methods):
         subset = df_myria[df_myria["Method"] == method].sort_values(by="Vegetation_Coverage_Pct")
@@ -241,6 +238,8 @@ def plot_myria_threshold_dynamics(df_myria: pd.DataFrame, output_dir: Path):
             linewidth=2.5,
             alpha=1.0,
             markersize=4,
+            marker=["o", "s", "D"][idx],
+            markevery=10000,
         )
 
         for thresh in myria_key_thresholds:
@@ -249,12 +248,32 @@ def plot_myria_threshold_dynamics(df_myria: pd.DataFrame, output_dir: Path):
             x_val = closest_row["Vegetation_Coverage_Pct"]
             y_val = closest_row["False_Discovery_Rate_Pct"]
 
-            ax.plot(x_val, y_val, marker="o", color=palette[idx], markersize=6)
+            ax.plot(
+                x_val,
+                y_val,
+                marker=["o", "s", "D"][idx],
+                color=palette[idx],
+                markersize=6,
+            )
+
+            if idx == 0:  # blue
+                offset_x = 18
+                offset_y = -3
+            elif idx == 1:  # yellow
+                offset_x = 0
+                offset_y = 8
+            elif idx == 2:  # green
+                offset_x = -18
+                offset_y = -3
+            else:
+                offset_x = 8
+                offset_y = 8
+
             ax.annotate(
                 f"{int(thresh)}%",
                 (x_val, y_val),
                 textcoords="offset points",
-                xytext=(0, 8),
+                xytext=(offset_x, offset_y),
                 ha="center",
                 fontsize=9,
                 fontweight="bold",
@@ -265,19 +284,18 @@ def plot_myria_threshold_dynamics(df_myria: pd.DataFrame, output_dir: Path):
     ax.set_xlabel("Total Points Classified as Vegetation [%]", labelpad=10)
     ax.set_ylabel("False Discovery Rate (FDR) [%]", labelpad=10)
 
+    ax.set_yscale("log")
+    ax.set_xlim(15)
+    ax.set_ylim(None, 10)
+
     formatter = FuncFormatter(lambda x, pos: f"{x:g}%")
     ax.xaxis.set_major_formatter(formatter)
+    # ax.xaxis.set_major_formatter(formatter)
     ax.yaxis.set_major_formatter(formatter)
-    # ax.set_ylim(0, 20)
-    # ax.set_xlim(25, 40)
+    # ax.tick_params(axis="both", which="major", labelsize=11)
+    # ax.grid(True, which="major", color="gray", linewidth=1.0)
 
-    ax.legend(
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.15),
-        ncol=2,
-        frameon=True,
-        title="Classification Methods",
-    )
+    ax.legend(title="Classification Method", frameon=True)
 
     svg_path = output_dir / "myria_threshold_dynamics.svg"
     plt.savefig(svg_path, bbox_inches="tight")
@@ -385,7 +403,7 @@ def plot_static_pareto_front(df: pd.DataFrame, output_dir: Path):
     ax.yaxis.set_major_formatter(formatter)
     ax.set_ylim(bottom=0)
 
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=2, frameon=True)
+    ax.legend(frameon=True)
 
     svg_path = output_dir / "rule_based_pareto_front.svg"
     plt.savefig(svg_path, bbox_inches="tight")
