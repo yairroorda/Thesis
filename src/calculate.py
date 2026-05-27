@@ -212,6 +212,7 @@ def calculate_intervisibility(
     KDtree: cKDTree,
     chunk_size: float = DEFAULT_CHUNK_SIZE,
     distance_mask_function: Callable = get_distance_mask,
+    vegetation_mode: str = "probabilistic",
 ) -> tuple[float, np.ndarray]:
     """
     Walk the line of sight from source to target in steps and compute a
@@ -319,15 +320,30 @@ def calculate_intervisibility(
                 return 0.0, los_data
 
             # Decrease visibility for vegetation
-            vegetation_count = int(np.count_nonzero(in_bin & vegetation_mask))
-            vegetation_density = vegetation_count / cross_section_area
+            if vegetation_mode == "ignore":
+                step_vis[current_global_step] = visibility
+                continue
+            elif vegetation_mode == "binary":
+                vegetation_count = int(np.count_nonzero(in_bin & vegetation_mask))
+                vegetation_density = vegetation_count / cross_section_area
+                if vegetation_density >= VEGETATION_DENSITY_THRESHOLD:
+                    los_data = np.column_stack([all_step_positions, step_vis])
+                    return 0.0, los_data
+                else:
+                    step_vis[current_global_step] = visibility
+                    continue
+            elif vegetation_mode == "probabilistic":
+                vegetation_count = int(np.count_nonzero(in_bin & vegetation_mask))
+                vegetation_density = vegetation_count / cross_section_area
 
-            if vegetation_density >= VEGETATION_DENSITY_THRESHOLD:
-                actual_step = step_length if current_global_step < num_steps - 1 else segment.length - current_global_step * step_length
-                attenuation = np.exp(-BEER_LAMBERT_COEFFICIENT * vegetation_density * actual_step)
-                visibility *= attenuation
+                if vegetation_density >= VEGETATION_DENSITY_THRESHOLD:
+                    actual_step = step_length if current_global_step < num_steps - 1 else segment.length - current_global_step * step_length
+                    attenuation = np.exp(-BEER_LAMBERT_COEFFICIENT * vegetation_density * actual_step)
+                    visibility *= attenuation
 
-            step_vis[current_global_step] = visibility
+                step_vis[current_global_step] = visibility
+            else:
+                raise ValueError(f"Invalid vegetation_mode: {vegetation_mode}")
 
     visibility = np.clip(visibility, 0.0, 1.0)
     # logger.info(f"Final visibility: {visibility:.4f}")
@@ -382,6 +398,7 @@ def calculate_viewshed_for_grid(
     intervisibility_func: Callable = calculate_intervisibility,
     save_to_disk: bool = True,
     chunk_size: float = DEFAULT_CHUNK_SIZE,
+    vegetation_mode: str = "probabilistic",
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     For every point in the grid, compute visibility from target to that point
@@ -415,7 +432,14 @@ def calculate_viewshed_for_grid(
         )
 
         # Calculate visibility and collect per-step LoS data
-        visibility_values[i], los_data = intervisibility_func(cylinder, array_points, array_coords, KDtree, chunk_size=chunk_size)
+        visibility_values[i], los_data = intervisibility_func(
+            cylinder,
+            array_points,
+            array_coords,
+            KDtree,
+            chunk_size=chunk_size,
+            vegetation_mode=vegetation_mode,
+        )
         all_los_chunks.append(los_data)
 
     # Build output array
@@ -622,6 +646,7 @@ def calculate_3d_viewshed(
         intervisibility_func=calculate_intervisibility,
         chunk_size=5,
         save_to_disk=save_to_disk,
+        vegetation_mode=run_cfg.vegetation_mode,
     )
 
     if save_to_disk:

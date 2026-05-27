@@ -6,7 +6,7 @@ from typing import List, Literal
 import geopandas as gpd
 import numpy as np
 import pdal
-from pyproj import Transformer, transform
+from pyproj import Transformer
 from shapely.geometry import LineString
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon as ShapelyPolygon
@@ -57,6 +57,7 @@ class RunConfig:
     z_height: float = 50.0
     target_source: Path | None = None
     log_level: str = "WARNING"
+    vegetation_mode: str = "probabilistic"  # options are "probabilistic", "binary", "ignore"
 
     def __post_init__(self):
         if self.los_mode == "fixed":

@@ -1,172 +1,174 @@
 import json
-import shutil
-import time
-from collections.abc import Iterator
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pdal
+import seaborn as sns
 from cloudfetch import AOIPolygon
 
-import calculate as calc
 from main import calculate_3d_viewshed, prepare_project
-from models import ProjectConfig, ProjectPaths, RunConfig
-from utils import center_target_point_hag, generate_benchmark_aois
-from visualize import save_viewshed_as_voxel_grid
+from models import Point, ProjectConfig, ProjectPaths, RunConfig
 
 
-def evaluate_vegetation_influence(
-    config: ProjectConfig,
-    num_aois: int,
-    output_dir: Path,
-    aoi_generator: Iterator[AOIPolygon] | None = None,
-) -> Path:
+def execute_viewshed_runs(
+    project_cfg: ProjectConfig,
+    project_paths: ProjectPaths,
+    run_cfg_base: RunConfig,
+) -> dict[str, Path]:
+    modes = ["ignore", "binary", "probabilistic"]
+    copc_paths = {}
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    for mode in modes:
+        print(f"\n--- Running calculation for mode: {mode} ---")
+        run_cfg_base.name = f"eval_{mode}"
+        run_cfg_base.vegetation_mode = mode
 
-    #
-    aoi_features: list[dict] = []
-    for index in range(1, num_aois + 1):
-        aoi = next(aoi_generator)
-        run_dir = output_dir / f"run_{index:02d}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        aoi.save_to_file(run_dir / "aoi.geojson")
-        aoi_features.append({"type": "Feature", "properties": {"run_index": index}, "geometry": aoi.polygon.__geo_interface__})
+        # bit of a hacky solution, but it makes sure the log outpt path exists
+        (project_paths.runs_folder / run_cfg_base.name).mkdir(parents=True, exist_ok=True)
 
-        temp_config = ProjectConfig(
-            name=f"vegetation_influence/temp_run_{index:02d}_{int(time.time())}",
-            dataset=config.dataset,
-            classification_method=config.classification_method,
-            myria3d_vegetation_prob_threshold_pct=config.myria3d_vegetation_prob_threshold_pct,
-            profile=config.profile,
-            aoi_source=run_dir / "aoi.geojson",
-            overwrite=False,
+        run_paths, _, _ = calculate_3d_viewshed(
+            project_cfg=project_cfg,
+            project_paths=project_paths,
+            run_cfg=run_cfg_base,
         )
 
-        project_paths = ProjectPaths(temp_config.name)
-        project_paths.folder.mkdir(parents=True, exist_ok=True)
-        aoi.save_to_file(project_paths.aoi)
+        copc_paths[mode] = run_paths.output_viewshed_copc_3d
 
-        project_paths = prepare_project(temp_config)
-        pipeline = pdal.Pipeline(json.dumps({"pipeline": [{"type": "readers.copc", "filename": str(project_paths.facades_copc)}]}))
+    return copc_paths
+
+
+def generate_comparison_csv(
+    target_source_path: Path,
+    copc_paths: dict[str, Path],
+    output_csv: Path,
+    bin_size_m=5,
+) -> pd.DataFrame:
+
+    results_dict = {}
+
+    target_point = Point.get_from_file(target_source_path)
+    observer_coords = target_point.array_coords
+
+    for mode, copc_path in copc_paths.items():
+        print(f"Processing COPC file for mode: {mode}...")
+
+        # Load the relevant COPC file
+        pipeline = pdal.Pipeline(json.dumps({"pipeline": [{"type": "readers.copc", "filename": str(copc_path)}]}))
         pipeline.execute()
+        out_array = pipeline.arrays[0]
 
-        vegetation_count = 0
-        point_count = 0
-        for chunk in pipeline.arrays:
-            if "Classification" not in chunk.dtype.names:
-                continue
-            classifications = chunk["Classification"]
-            point_count += classifications.size
-            vegetation_count += int(np.count_nonzero(classifications == calc.CLASS_VEGETATION))
+        # Extract coordinates and probabilities
+        flat_coords = np.column_stack((out_array["X"], out_array["Y"], out_array["Z"]))
+        flat_probs = out_array["Visibility"]
 
-        input_vegetation_percentage = float(100.0 * vegetation_count / point_count) if point_count else 0.0
+        # Calculate Euclidean distance from observer for every voxel
+        distances = np.linalg.norm(flat_coords - observer_coords, axis=1)
 
-        target = center_target_point_hag(aoi, input_path=project_paths.facades_copc, hag_m=1.7)
-        target.save_to_file(run_dir / "target.copc.laz")
+        # Create distance bins
+        bins = np.arange(0, distances.max() + bin_size_m, bin_size_m)
+        distance_labels = bins[:-1]  # Left edge of the bin
+        binned_distances = np.digitize(distances, bins) - 1
 
-        # FIX: Explicitly create the 'with' run folder before calling the calculation
-        with_cfg = RunConfig(name=f"run_{index:02d}_with", target_source=run_dir / "target.copc.laz")
-        (project_paths.runs_folder / with_cfg.name).mkdir(parents=True, exist_ok=True)
+        # Store in a temporary dataframe
+        df_temp = pd.DataFrame({
+            "Distance_Bin": distance_labels[binned_distances],
+            f"Vol_{mode.capitalize()}": flat_probs,  # Using Vol_... for sum as you requested
+        })
 
-        with_run, with_vis, _ = calculate_3d_viewshed(project_cfg=temp_config, project_paths=project_paths, run_cfg=with_cfg, profile=config.profile)
-        save_viewshed_as_voxel_grid(with_run, with_cfg, project_paths, project_cfg=temp_config)
-        with_voxel = run_dir / "3d_viewshed_voxel_grid_including_vegetation.copc.laz"
-        shutil.copy2(with_run.output_viewshed_voxel_grid_3d, with_voxel)
+        # Group by the bin and sum the volumes
+        binned_sums = df_temp.groupby("Distance_Bin").sum().reset_index()
+        results_dict[mode] = binned_sums
 
-        original_threshold = calc.VEGETATION_DENSITY_THRESHOLD
-        calc.VEGETATION_DENSITY_THRESHOLD = float("inf")
-        try:
-            # FIX: Explicitly create the 'without' run folder before calling the calculation
-            without_cfg = RunConfig(name=f"run_{index:02d}_without", target_source=run_dir / "target.copc.laz")
-            (project_paths.runs_folder / without_cfg.name).mkdir(parents=True, exist_ok=True)
+    # Merge the three modes into one DataFrame
+    final_df = results_dict["ignore"]
+    final_df = final_df.merge(results_dict["binary"], on="Distance_Bin")
+    final_df = final_df.merge(results_dict["probabilistic"], on="Distance_Bin")
+    final_df.to_csv(output_csv, index=False)
 
-            without_run, without_vis, _ = calculate_3d_viewshed(project_cfg=temp_config, project_paths=project_paths, run_cfg=without_cfg, profile=config.profile)
-            save_viewshed_as_voxel_grid(without_run, without_cfg, project_paths, project_cfg=temp_config)
-        finally:
-            calc.VEGETATION_DENSITY_THRESHOLD = original_threshold
+    return final_df
 
-        without_voxel = run_dir / "3d_viewshed_voxel_grid_excluding_vegetation.copc.laz"
-        shutil.copy2(without_run.output_viewshed_voxel_grid_3d, without_voxel)
 
-        delta = np.abs(with_vis - without_vis)
-        affected = delta > 0
-        visible = with_vis > 0
-        visible_affected = affected & visible
+def plot_thesis_comparisons(csv_path: Path, output_dir: Path) -> None:
+    df = pd.read_csv(csv_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    sns.set_theme(style="whitegrid")
 
-        run_metrics = {
-            "voxel_count": int(delta.size),
-            "affected_voxel_percentage": float(100.0 * affected.mean()) if delta.size else 0.0,
-            "visible_voxel_percentage_affected": float(100.0 * visible_affected.sum() / visible.sum()) if visible.any() else 0.0,
-            "mean_absolute_difference": float(delta.mean()) if delta.size else 0.0,
-            "std_absolute_difference": float(delta.std()) if delta.size else 0.0,
-            "mean_effected_difference": float(delta[affected].mean()) if affected.any() else 0.0,
-            "std_effected_difference": float(delta[affected].std()) if affected.any() else 0.0,
-        }
+    plt.figure(figsize=(10, 6))
+    plt.plot(df["Distance_Bin"], df["Vol_Ignore"], label="Ignore vegetation", linestyle="--", color="blue", linewidth=2)
+    plt.plot(df["Distance_Bin"], df["Vol_Binary"], label="Opaque vegetation", linestyle="--", color="red", linewidth=2)
+    plt.plot(df["Distance_Bin"], df["Vol_Probabilistic"], label="Probabilistic", linestyle="-", color="green", linewidth=3)
 
-        run_metrics["input_vegetation_percentage"] = input_vegetation_percentage
-
-        comparison = {
-            "run_index": index,
-            "files": {
-                "with_vegetation": with_voxel.name,
-                "without_vegetation": without_voxel.name,
-            },
-            "metrics": run_metrics,
-        }
-        (run_dir / "comparison.json").write_text(json.dumps(comparison, indent=2), encoding="utf-8")
-        shutil.rmtree(project_paths.folder, ignore_errors=True)
-
-    (output_dir / "aois.geojson").write_text(
-        json.dumps({"type": "FeatureCollection", "features": aoi_features}, indent=2),
-        encoding="utf-8",
-    )
-
-    run_comparison_files = sorted(output_dir.glob("run_*/comparison.json"))
-    run_metrics = []
-    for comparison_file in run_comparison_files:
-        data = json.loads(comparison_file.read_text(encoding="utf-8"))
-        metrics = data.get("metrics", {})
-        if isinstance(metrics, dict):
-            run_metrics.append(metrics)
-
-    summary = {}
-    metric_keys = set().union(*(m.keys() for m in run_metrics)) if run_metrics else set()
-    for key in sorted(metric_keys):
-        values = [m[key] for m in run_metrics if key in m and isinstance(m[key], (int, float, np.integer, np.floating))]
-        if not values:
-            continue
-        values_arr = np.asarray(values, dtype=np.float64)
-        summary[key] = {
-            "mean": float(np.mean(values_arr)),
-            "std_across_aois": float(np.std(values_arr)),
-        }
-
-    summary_path = output_dir / "comparison.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-
-    return output_dir
+    plt.title("Visibility Volume Decay over Distance", fontsize=14)
+    plt.xlabel("Distance from Observer (meters)", fontsize=12)
+    plt.ylabel("Visible Airspace Volume (Voxel equivalents)", fontsize=12)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output_dir / "plot_visibility_decay.png", dpi=300)
+    plt.close()
+    print(f"Plot saved to {output_dir / 'plot_visibility_decay.png'}")
 
 
 def main():
-    name = "vegetation_influence"
-    output_dir = Path(f"data/{name}")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    aoi_path = output_dir / "sampling_aoi.geojson"
-
-    if not aoi_path.exists():
-        sampling_aoi = AOIPolygon.get_from_user()
-        sampling_aoi.save_to_file(aoi_path)
-    else:
-        sampling_aoi = AOIPolygon.get_from_file(aoi_path)
-
-    evaluate_vegetation_influence(
-        ProjectConfig(dataset=["AHN6", "AHN5"], name=name, aoi_source=aoi_path),
-        num_aois=3,
-        output_dir=output_dir,
-        aoi_generator=generate_benchmark_aois(size=100, area=sampling_aoi, seed=42),
+    # Setup Project Configuration
+    project_cfg = ProjectConfig(
+        name="vegetation_influence_groningen",
+        dataset=["AHN6", "AHN5"],
+        classification_method="myria3d",
+        myria3d_vegetation_prob_threshold_pct=70,
+        profile="testing",
     )
+
+    # Prepare the project
+    project_paths = prepare_project(project_cfg, base_dir=Path("experiments"))
+
+    # Ensure we have an AOI
+    if not project_paths.aoi.exists():
+        print("Please draw an AOI that contains both buildings and vegetation.")
+        aoi = AOIPolygon.get_from_user(title="Draw AOI for Single Comparison")
+        aoi.save_to_file(project_paths.aoi)
+    else:
+        aoi = AOIPolygon.get_from_file(project_paths.aoi)
+
+    aoi_rd = aoi.to_crs(project_cfg.crs)
+
+    # Ensure we have a target point
+    target_path = project_paths.folder / "target.copc.laz"
+    if not target_path.exists():
+        print("Please select the target (observer) point on the map.")
+        Point.get(
+            hag_sample_input_path=project_paths.input_copc,
+            input_path=target_path,
+            title="Select Observer Target",
+            aoi=aoi_rd,
+        )
+
+    # Base Run Configuration
+    run_cfg = RunConfig(
+        name="base_run",
+        target_source=target_path,
+        resolution=5.0,
+        z_height=20.0,
+        los_radius=0.15,
+        los_step_length=0.15,
+    )
+
+    # Run the heavy calculations
+    copc_paths = execute_viewshed_runs(project_cfg, project_paths, run_cfg)
+
+    # Extract data, bin by distance, and generate CSV
+    output_csv = project_paths.folder / "distance_comparison.csv"
+
+    generate_comparison_csv(
+        target_source_path=target_path,
+        copc_paths=copc_paths,
+        output_csv=output_csv,
+        bin_size_m=5,
+    )
+
+    # Generate Plots
+    plot_thesis_comparisons(output_csv, project_paths.folder)
 
 
 if __name__ == "__main__":
