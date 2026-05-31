@@ -71,7 +71,7 @@ def remove_intermediate_files(project_paths: ProjectPaths, run_paths: RunPaths, 
             file_path.unlink()
 
 
-def write_metadata(run_cfg, project_paths: Path, run_paths: Path, active_profile: str, source_aoi_crs: str, start_time: float) -> None:
+def write_metadata(run_cfg, project_paths: ProjectPaths, run_paths: RunPaths, active_profile: str, source_aoi_crs: str, start_time: float) -> None:
     """Write run metadata to JSON file."""
     metadata = {
         "project": {

@@ -14,8 +14,6 @@ from shapely.geometry import Polygon as ShapelyPolygon
 from gui import make_map
 
 RadiusMode = Literal["fixed", "widening_linear"]
-_TO_RD = Transformer.from_crs("EPSG:4326", "EPSG:28992", always_xy=True)
-_TO_LAMBERT = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
 
 
 def _validate_points_in_aoi(points_xy: list[tuple[float, float]], aoi: "AOIPolygon", labels: list[str]) -> None:
@@ -90,6 +88,7 @@ class RunPaths:
         self.project = project_paths
         self.name = run_name
         self.folder = project_paths.runs_folder / run_name
+        self.folder.mkdir(parents=True, exist_ok=True)
 
         self.run_log = self.folder / "run.log"
         self.metadata = self.folder / "metadata.json"
@@ -520,3 +519,141 @@ class ObserverPath:
             path = path.to_crs(aoi.crs)
 
         return path
+
+
+class AOICircle:
+    """A circular area of interest defined by a center Point and a radius."""
+
+    def __init__(self, center: "Point", radius: float, crs: str = "EPSG:28992"):
+        self.center = center
+        self.radius = radius
+        self.crs = crs
+        self.polygon = ShapelyPoint(center.x, center.y).buffer(radius)
+
+    @classmethod
+    def get(cls, input_path: Path, title: str = "Set Target and Evaluation Radius", overwrite: bool = False, crs: str = "EPSG:28992") -> tuple["AOICircle", bool]:
+        if input_path.exists() and not overwrite:
+            # If loading from an existing file, we assume HAG was already resolved in the previous run.
+            return cls.get_from_file(input_path), False
+        else:
+            circle, is_hag = cls.get_from_user(title=title, crs=crs)
+            circle.save_to_file(input_path)
+            return circle, is_hag
+
+    @classmethod
+    def get_from_user(cls, title: str = "Set Target and Evaluation Radius", crs: str = "EPSG:28992") -> tuple["AOICircle", bool]:
+        import tkinter as tk
+
+        root, map_widget, controls = make_map(title)
+
+        state = {"center_latlon": None, "polygon_obj": None, "marker_obj": None}
+
+        to_rd = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        to_latlon = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+
+        tk.Label(controls, text="Click map to set the observer target.").pack(anchor="w", pady=(0, 10))
+
+        tk.Label(controls, text="Evaluation Radius (meters)").pack(anchor="w")
+        radius_entry = tk.Entry(controls)
+        radius_entry.insert(0, "100.0")
+        radius_entry.pack(fill=tk.X)
+
+        tk.Label(controls, text="Observer Z Height").pack(anchor="w", pady=(8, 0))
+        z_entry = tk.Entry(controls)
+        z_entry.insert(0, "1.8")
+        z_entry.pack(fill=tk.X)
+
+        is_hag = tk.BooleanVar(value=True)
+        tk.Checkbutton(controls, text="Z is Height Above Ground (HAG)", variable=is_hag).pack(anchor="w", pady=(5, 0))
+
+        def redraw(*args):
+            if state["polygon_obj"] is not None:
+                state["polygon_obj"].delete()
+            if state["marker_obj"] is not None:
+                state["marker_obj"].delete()
+
+            if state["center_latlon"] is None:
+                return
+
+            lat, lon = state["center_latlon"]
+            state["marker_obj"] = map_widget.set_marker(lat, lon, text="Observer")
+
+            try:
+                r = float(radius_entry.get())
+            except ValueError:
+                r = 100.0  # Fallback if typing is incomplete
+
+            # Calculate circle projection for live map preview
+            x, y = to_rd.transform(lon, lat)
+            circle_poly = ShapelyPoint(x, y).buffer(r)
+
+            # Project exterior coordinates back to Lat/Lon for the map widget
+            latlon_path = [(clat, clon) for clon, clat in [to_latlon.transform(cx, cy) for cx, cy in circle_poly.exterior.coords]]
+            state["polygon_obj"] = map_widget.set_polygon(latlon_path, outline_color="blue", fill_color="", border_width=2)
+
+        radius_entry.bind("<KeyRelease>", redraw)
+
+        def on_click(coords):
+            state["center_latlon"] = (float(coords[0]), float(coords[1]))
+            redraw()
+
+        tk.Button(controls, text="Done", command=root.quit).pack(fill=tk.X, pady=(15, 0))
+        map_widget.add_left_click_map_command(on_click)
+
+        root.mainloop()
+
+        if state["center_latlon"] is None:
+            raise ValueError("No center point was selected.")
+
+        lat, lon = state["center_latlon"]
+        x, y = to_rd.transform(lon, lat)
+        z_val = float(z_entry.get())
+        radius_val = float(radius_entry.get())
+        root.destroy()
+
+        # Notice we return the point without HAG applied yet, and pass the flag up!
+        from models import Point
+
+        pt = Point(x, y, z_val)
+        return cls(center=pt, radius=radius_val, crs=crs), is_hag.get()
+
+    @classmethod
+    def get_from_file(cls, path: Path) -> "AOICircle":
+
+        gdf = gpd.read_file(path)
+        if gdf.empty:
+            raise ValueError(f"No geometry found in {path}")
+
+        source_crs = gdf.crs.to_string() if gdf.crs else "EPSG:4326"
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326")
+
+        polygon = gdf.geometry.iloc[0]
+
+        # Reconstruct center and radius from the saved polygon
+        centroid = polygon.centroid
+        minx, miny, maxx, maxy = polygon.bounds
+        radius = (maxx - minx) / 2.0  # Half the width of the bounding box
+
+        # Note: 2D GeoJSON polygons drop the Z-height.
+        # We default to 0.0 here, which is fine because the true 3D target is safely saved in target.copc.laz
+        reconstructed_center = Point(centroid.x, centroid.y, 0.0)
+
+        return cls(center=reconstructed_center, radius=radius, crs=source_crs)
+
+    @property
+    def wkt(self):
+        return self.polygon.wkt
+
+    def to_crs(self, crs: str) -> "AOICircle":
+        if self.crs == crs:
+            return self
+        gdf = gpd.GeoDataFrame(geometry=[self.polygon], crs=self.crs)
+        return AOICircle(gdf.to_crs(crs).geometry.iloc[0], crs=crs)
+
+    def save_to_file(self, path: Path, crs: str | None = None) -> None:
+        gdf = gpd.GeoDataFrame(geometry=[self.polygon], crs=crs or self.crs)
+        gdf.to_file(path, driver="GeoJSON")
+
+    def __getattr__(self, attr):
+        return getattr(self.polygon, attr)
